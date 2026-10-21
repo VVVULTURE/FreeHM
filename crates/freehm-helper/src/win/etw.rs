@@ -6,11 +6,11 @@
 use freehm_core::frames::{PresentSource, PresentTracker};
 use freehm_core::helper_proto::FrameReport;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::System::Diagnostics::Etw::*;
-use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
 use windows::core::{GUID, PCWSTR, PWSTR};
 
 pub const IDLE_STOP: Duration = Duration::from_secs(10);
@@ -23,35 +23,35 @@ const D3D9: GUID = GUID::from_u128(0x783ACA0A_790E_4D7F_8451_AA850511C6B9);
 /// Microsoft-Windows-DxgKrnl — Present_Info (0xB8).
 const DXGKRNL: GUID = GUID::from_u128(0x802EC45A_1E99_4B83_9920_87C98277BA9D);
 
-fn qpc_freq() -> u64 {
-    static F: OnceLock<u64> = OnceLock::new();
-    *F.get_or_init(|| {
-        let mut f = 0i64;
-        unsafe {
-            let _ = QueryPerformanceFrequency(&mut f);
-        }
-        f.max(1) as u64
-    })
+/// FILETIME of 1970-01-01, so nanosecond values stay far from `u64::MAX`.
+const UNIX_EPOCH_FILETIME: u64 = 116_444_736_000_000_000;
+
+/// Event timestamps arrive as system time (FILETIME, 100 ns units): without
+/// `PROCESS_TRACE_MODE_RAW_TIMESTAMP` ETW converts every clock type to it, so the event
+/// clock and [`now_ns`] are always the same clock.
+fn filetime_to_ns(ft: u64) -> u64 {
+    ft.saturating_sub(UNIX_EPOCH_FILETIME).saturating_mul(100)
 }
 
-fn qpc_to_ns(t: u64) -> u64 {
-    (t as u128 * 1_000_000_000 / qpc_freq() as u128) as u64
+fn now_filetime() -> u64 {
+    let ft = unsafe { GetSystemTimePreciseAsFileTime() };
+    (ft.dwHighDateTime as u64) << 32 | ft.dwLowDateTime as u64
 }
 
 fn now_ns() -> u64 {
-    let mut t = 0i64;
-    unsafe {
-        let _ = QueryPerformanceCounter(&mut t);
-    }
-    qpc_to_ns(t as u64)
+    filetime_to_ns(now_filetime())
 }
 
 /// Event counters for `freehm-helper selftest`: all events, events per provider, accepted.
 static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+/// Raw header timestamp of the last accepted present (selftest diagnostics).
+static LAST_RAW: AtomicU64 = AtomicU64::new(0);
 
 pub fn debug_counts() -> String {
     let c: Vec<u64> = COUNTS.iter().map(|c| c.load(Ordering::Relaxed)).collect();
-    format!("events received {} (DXGI {}, D3D9 {}, DxgKrnl {}), accepted as presents {}", c[0], c[1], c[2], c[3], c[4])
+    let last = LAST_RAW.load(Ordering::Relaxed);
+    let age = if last == 0 { "none".to_string() } else { format!("{} ms before now", (now_filetime() as i64 - last as i64) / 10_000) };
+    format!("events received {} (DXGI {}, D3D9 {}, DxgKrnl {}), accepted as presents {}; last present timestamp {last} ({age})", c[0], c[1], c[2], c[3], c[4])
 }
 
 unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
@@ -84,9 +84,10 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
         return;
     }
     COUNTS[4].fetch_add(1, Ordering::Relaxed);
+    LAST_RAW.store(h.TimeStamp as u64, Ordering::Relaxed);
     let tracker = unsafe { &*(r.UserContext as *const Mutex<PresentTracker>) };
     if let Ok(mut t) = tracker.lock() {
-        t.record(h.ProcessId, src, qpc_to_ns(h.TimeStamp as u64));
+        t.record(h.ProcessId, src, filetime_to_ns(h.TimeStamp as u64));
     }
 }
 
@@ -104,12 +105,14 @@ impl Props {
         unsafe {
             (*ep).Wnode.BufferSize = total as u32;
             (*ep).Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-            (*ep).Wnode.ClientContext = 1; // QPC timestamps
+            (*ep).Wnode.ClientContext = 1; // QPC resolution (delivered converted to FILETIME)
             (*ep).LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
             (*ep).LoggerNameOffset = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
-            (*ep).BufferSize = 64; // KB
+            // Small buffers: a real-time consumer only sees a buffer once it is full or the
+            // flush timer fires, so small ones keep the delivery delay well under a second.
+            (*ep).BufferSize = 8; // KB
             (*ep).MinimumBuffers = 4;
-            (*ep).MaximumBuffers = 32;
+            (*ep).MaximumBuffers = 64;
             (*ep).FlushTimer = 1; // seconds
         }
         p
@@ -178,7 +181,7 @@ impl Session {
         let ctx = Arc::into_raw(tracker) as *mut std::ffi::c_void;
         let mut lname = wide(SESSION_NAME);
         let mut logfile = EVENT_TRACE_LOGFILEW { LoggerName: PWSTR(lname.as_mut_ptr()), Context: ctx, ..Default::default() };
-        logfile.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
+        logfile.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
         logfile.Anonymous2.EventRecordCallback = Some(on_event);
         let trace = unsafe { OpenTraceW(&mut logfile) };
         // INVALID_PROCESSTRACE_HANDLE is (TRACEHANDLE)INVALID_HANDLE_VALUE.

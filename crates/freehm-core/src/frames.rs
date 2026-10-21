@@ -7,6 +7,10 @@
 //! - **FPS** is the number of present intervals in the trailing [`FPS_WINDOW_NS`] divided by
 //!   their span — i.e. the reciprocal of the mean frame time over one second.
 //!
+//! Both windows end at the newest present received, not at "now": real-time ETW hands
+//! events over in buffers, up to [`DELIVERY_LAG_NS`] late. A process whose newest present
+//! is older than that has stopped presenting and gets no statistics.
+//!
 //! The timestamps come from ETW event headers in the helper service; nothing is read from
 //! the game process.
 
@@ -15,6 +19,9 @@ use std::collections::{HashMap, VecDeque};
 
 pub const FPS_WINDOW_NS: u64 = 1_000_000_000;
 pub const FRAMETIME_WINDOW_NS: u64 = 250_000_000;
+/// Longest expected delay between a present and its event reaching the helper (the ETW
+/// session's one-second flush timer).
+pub const DELIVERY_LAG_NS: u64 = 1_000_000_000;
 /// Presents older than this are discarded.
 const KEEP_NS: u64 = 2_000_000_000;
 /// A process with no presents for this long is forgotten.
@@ -43,11 +50,15 @@ pub struct FrameStats {
 }
 
 /// Compute statistics from ascending timestamps (ns) at time `now`.
-/// Returns `None` when fewer than two presents fall in the FPS window.
+/// Returns `None` when the newest present is older than [`DELIVERY_LAG_NS`] or fewer than
+/// two presents fall in the FPS window.
 pub fn compute(ts: &VecDeque<u64>, now: u64) -> Option<FrameStats> {
-    let last = *ts.back()?;
-    let fps_start = now.saturating_sub(FPS_WINDOW_NS);
-    let in_fps: Vec<u64> = ts.iter().copied().filter(|&t| t >= fps_start && t <= now).collect();
+    let end = ts.iter().rev().copied().find(|&t| t <= now)?;
+    if now - end > DELIVERY_LAG_NS {
+        return None;
+    }
+    let fps_start = end.saturating_sub(FPS_WINDOW_NS);
+    let in_fps: Vec<u64> = ts.iter().copied().filter(|&t| t >= fps_start && t <= end).collect();
     if in_fps.len() < 2 {
         return None;
     }
@@ -58,14 +69,14 @@ pub fn compute(ts: &VecDeque<u64>, now: u64) -> Option<FrameStats> {
     let intervals = (in_fps.len() - 1) as f64;
     let fps = intervals * 1e9 / span;
 
-    let ft_start = now.saturating_sub(FRAMETIME_WINDOW_NS);
+    let ft_start = end.saturating_sub(FRAMETIME_WINDOW_NS);
     let mut first_ft = in_fps.iter().position(|&t| t >= ft_start).unwrap_or(in_fps.len() - 1);
     // Need at least two intervals; extend backwards into the FPS window if necessary.
     first_ft = first_ft.min(in_fps.len().saturating_sub(3));
     let ft_slice = &in_fps[first_ft..];
     let frametime_ms = (ft_slice[ft_slice.len() - 1] - ft_slice[0]) as f64 / 1e6 / (ft_slice.len() - 1) as f64;
 
-    Some(FrameStats { fps, frametime_ms, samples: intervals as u32, last_present_age_ms: now.saturating_sub(last) / 1_000_000 })
+    Some(FrameStats { fps, frametime_ms, samples: intervals as u32, last_present_age_ms: (now - end) / 1_000_000 })
 }
 
 #[derive(Default)]
@@ -195,6 +206,28 @@ mod tests {
         // Presents older than the FPS window don't count.
         let old = ring(10 * MS, 10, 0);
         assert!(compute(&old, 5_000 * MS).is_none());
+    }
+
+    #[test]
+    fn late_delivered_events_still_count() {
+        // 120 FPS, but the newest event received is 600 ms old (ETW buffer delay).
+        let r = ring(1_000_000_000 / 120, 240, 0);
+        let last = *r.back().unwrap();
+        let s = compute(&r, last + 600 * MS).unwrap();
+        assert!((s.fps - 120.0).abs() < 0.5, "{}", s.fps);
+        assert_eq!(s.last_present_age_ms, 600);
+        // Past the delivery lag the process has stopped presenting.
+        assert!(compute(&r, last + DELIVERY_LAG_NS + MS).is_none());
+    }
+
+    #[test]
+    fn timestamps_after_now_are_ignored() {
+        let r = ring(10 * MS, 200, 0);
+        let s = compute(&r, 1_000 * MS).unwrap();
+        assert!((s.fps - 100.0).abs() < 0.5);
+        assert_eq!(s.last_present_age_ms, 0);
+        let future: VecDeque<u64> = [5_000 * MS, 5_010 * MS].into_iter().collect();
+        assert!(compute(&future, 1_000 * MS).is_none());
     }
 
     #[test]

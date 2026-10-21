@@ -84,7 +84,37 @@ if ($Helper) {
     $svc = Get-CimInstance Win32_Service -Filter "Name='FreeHMHelper'"
     Pass "helper service: account $($svc.StartName), start mode $($svc.StartMode), path $($svc.PathName)"
     & sc.exe qprivs FreeHMHelper | Tee-Object "$Out\helper-privileges.txt"
-    & $hx selftest 2>&1 | Tee-Object "$Out\helper-selftest.txt"
+    # A real D3D11 swap chain (WARP on runners without a GPU) for the frame-timing checks.
+    $pl = Join-Path (Split-Path $hx) "examples\present_loop.exe"
+    $presenter = if (Test-Path $pl) { Start-Process $pl -ArgumentList "40" -PassThru -RedirectStandardOutput "$Out\present-loop.txt" } else { $null }
+    Start-Sleep -Seconds 2
+    $self = & $hx selftest 2>&1 | Tee-Object "$Out\helper-selftest.txt" | Out-String
+    if ($presenter) {
+        $m = [regex]::Match($self, "pid\s+$($presenter.Id)\s+\w+\s+([\d.]+) fps")
+        if (-not $m.Success) { Fail "helper ETW did not see the test presenter (pid $($presenter.Id)):`n$self" }
+        if ([double]$m.Groups[1].Value -lt 10) { Fail "presenter measured at only $($m.Groups[1].Value) fps" }
+        Pass "helper ETW frame timing sees the D3D11 presenter at $($m.Groups[1].Value) fps"
+
+        # Whole path: app -> helper service (named pipe) -> ETW -> overlay readings.
+        $cfg = Join-Path ([IO.Path]::GetTempPath()) ("freehm-ci-fps-" + [guid]::NewGuid())
+        New-Item -ItemType Directory $cfg | Out-Null
+        @{ schema_version = 1; general = @{ start_with_system = $false }; detection = @{ auto_detect = $false; manual_games = @("present_loop.exe") }
+           hotkeys = @{ toggle_overlay = "Ctrl+Alt+Shift+F12" }; permissions = @{ first_run_done = $true } } | ConvertTo-Json -Depth 5 | Set-Content "$cfg\config.json" -Encoding utf8
+        $env:FREEHM_CONFIG_DIR = $cfg
+        $app2 = Start-Process $exe -ArgumentList "--background" -PassThru
+        $fps = $null
+        for ($i = 0; $i -lt 30 -and -not $fps; $i++) {
+            Start-Sleep -Seconds 1
+            try { $s2 = Status } catch { continue }
+            $fps = $s2.snapshot.readings | Where-Object { $_.metric -eq "Fps" -and $null -ne $_.value } | Select-Object -First 1
+        }
+        $s2 | ConvertTo-Json -Depth 12 | Set-Content "$Out\windows-status-fps.json"
+        & $exe --quit | Out-Null; $null = $app2.WaitForExit(10000)
+        if (-not $fps) { Fail "app shows no FPS for the detected game: $(($s2.snapshot.readings | Where-Object metric -eq 'Fps').reason)" }
+        $ft = $s2.snapshot.readings | Where-Object { $_.metric -eq "FrameTime" } | Select-Object -First 1
+        Pass "app reads FPS $([math]::Round($fps.value,1)) / frame time $([math]::Round($ft.value,2)) ms for '$($s2.game.active.name)' through the helper ($($fps.freshness))"
+        Stop-Process -Id $presenter.Id -ErrorAction SilentlyContinue
+    }
     & $hx uninstall 2>&1 | Tee-Object "$Out\helper-uninstall.txt"
     $st = (& $hx status | Out-String).Trim()
     if ($st -notmatch "not installed") { Fail "helper still installed after uninstall: $st" }
