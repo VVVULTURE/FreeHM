@@ -1,0 +1,16 @@
+#!/bin/sh
+# Remove the optional sensor-permission setup (freehm --setup-permissions) with the package.
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if [ -f /etc/udev/rules.d/70-freehm.rules ]; then
+        rm -f /etc/udev/rules.d/70-freehm.rules
+        udevadm control --reload-rules 2>/dev/null || true
+        for f in /sys/class/powercap/intel-rapl*/energy_uj; do
+            [ -e "$f" ] && chgrp root "$f" 2>/dev/null && chmod 0400 "$f" 2>/dev/null || true
+        done
+    fi
+    if getent group freehm >/dev/null 2>&1; then
+        groupdel freehm 2>/dev/null || true
+    fi
+fi
+exit 0

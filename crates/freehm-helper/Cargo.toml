@@ -1,0 +1,35 @@
+[package]
+name = "freehm-helper"
+description = "FreeHM privileged helper service (Windows): CPU temperature via PawnIO and frame statistics via ETW"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+freehm-core = { path = "../freehm-core" }
+serde.workspace = true
+serde_json.workspace = true
+log = { workspace = true, features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Etw",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+]

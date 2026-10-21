@@ -1,0 +1,9 @@
+target/
+*.json.tmp
+/dist/
+/ci-out/
+/AppDir/
+/appimagetool
+# Local working notes and the original task text (not part of the project)
+/prompt.txt
+/docs/WORKLOG.md

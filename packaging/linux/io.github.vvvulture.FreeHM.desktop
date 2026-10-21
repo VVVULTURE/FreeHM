@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=FreeHM
+GenericName=Hardware statistics overlay
+Comment=Lightweight CPU, GPU, memory and FPS overlay for games
+Exec=freehm
+Icon=io.github.vvvulture.FreeHM
+Terminal=false
+Categories=System;Monitor;Utility;
+Keywords=fps;overlay;gpu;cpu;temperature;vram;monitor;
+StartupNotify=false
+Actions=toggle;
+
+[Desktop Action toggle]
+Name=Show or hide the overlay
+Exec=freehm --toggle

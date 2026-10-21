@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>FreeHM third-party licenses</title>
+<style>body{font-family:system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem}pre{white-space:pre-wrap;background:#f4f4f4;padding:1rem}li{margin:.1rem 0}</style></head>
+<body>
+<h1>Third-party licenses</h1>
+<p>FreeHM is built from the following Rust crates. Fonts and other bundled assets are listed in THIRD_PARTY_NOTICES.md.</p>
+<h2>Overview</h2>
+<ul>{{#each overview}}<li><a href="#{{id}}">{{name}}</a> ({{count}})</li>{{/each}}</ul>
+<h2>Licenses</h2>
+{{#each licenses}}
+<h3 id="{{id}}">{{name}}</h3>
+<p>Used by:</p>
+<ul>{{#each used_by}}<li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>{{/each}}</ul>
+<pre>{{text}}</pre>
+{{/each}}
+</body>
+</html>
