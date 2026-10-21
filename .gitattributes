@@ -1,0 +1,8 @@
+* text=auto
+*.sh text eol=lf
+packaging/linux/debian/* text eol=lf
+*.desktop text eol=lf
+*.ttf binary
+*.bin binary
+*.ico binary
+*.png binary
