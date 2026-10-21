@@ -62,8 +62,14 @@ By default the overlay appears automatically while a game is in the foreground a
 the desktop. A shortcut press overrides that until the active game changes.
 
 Command line: `freehm [--background | --settings | --toggle | --show | --hide | --quit |
---status | --mock | --version]`. `--status` prints the running instance's full status as
-JSON, and `--mock` runs with simulated sensors for testing.
+--status | --apply-config FILE | --mock | --version]`.
+* `--status` prints the running instance's full status as JSON.
+* `--apply-config` validates a settings file (same format as `config.json`), then applies and
+  saves it. It rejects out-of-range values rather than adjusting them.
+* `--mock` runs with simulated sensors for testing.
+
+On Windows, `freehm.exe` is a GUI program, so PowerShell waits for it and reports its exit
+code only when its output is piped (`freehm --apply-config f.json | Out-String`).
 
 ### Settings
 

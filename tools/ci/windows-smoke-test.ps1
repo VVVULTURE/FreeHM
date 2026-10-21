@@ -12,6 +12,8 @@ $env:FREEHM_CONFIG_DIR = Join-Path ([IO.Path]::GetTempPath()) ("freehm-ci-" + [g
 function Fail($m) { Write-Host "FAIL: $m"; exit 1 }
 function Pass($m) { Write-Host "PASS: $m" }
 function Status { (& $exe --status | Out-String) | ConvertFrom-Json }
+# freehm.exe is a GUI-subsystem program: PowerShell waits for it (and sets $LASTEXITCODE)
+# only when its output is piped, so every command whose result matters is piped.
 
 Add-Type @"
 using System;
@@ -84,7 +86,7 @@ $c.overlay.anchor = "BottomLeft"; $c.overlay.font_size = 21.0; $c.overlay.font =
 ($c.metrics | Where-Object id -eq "CpuClock").enabled = $true
 $c.detection.manual_games = @("mygame.exe")
 $c | ConvertTo-Json -Depth 12 | Set-Content $cfgFile -Encoding utf8
-& $exe --apply-config $cfgFile; if ($LASTEXITCODE -ne 0) { Fail "--apply-config failed" }
+$msg = & $exe --apply-config $cfgFile 2>&1 | Out-String; if ($LASTEXITCODE -ne 0) { Fail "--apply-config failed: $msg" }
 $s = Status
 if (-not $s.hotkey.registered -or $s.hotkey.shortcut -ne "Ctrl+Shift+Alt+K") { Fail "new shortcut not active: $($s.hotkey | ConvertTo-Json -Compress)" }
 [W]::Chord([byte[]](0x11, 0x10, 0x4F)); Start-Sleep -Milliseconds 700
@@ -98,7 +100,7 @@ if (-not $s.autostart.enabled -or $run -notlike "*freehm.exe*") { Fail "enabling
 Pass "start with Windows on: $runKey\FreeHM = $run"
 $c.general.start_with_system = $false
 $c | ConvertTo-Json -Depth 12 | Set-Content $cfgFile -Encoding utf8
-& $exe --apply-config $cfgFile; if ($LASTEXITCODE -ne 0) { Fail "--apply-config failed" }
+$msg = & $exe --apply-config $cfgFile 2>&1 | Out-String; if ($LASTEXITCODE -ne 0) { Fail "--apply-config failed: $msg" }
 if ((Get-ItemProperty $runKey -Name FreeHM -ErrorAction SilentlyContinue) -or (Status).autostart.enabled) { Fail "disabling startup left the Run entry" }
 Pass "start with Windows off: Run entry removed"
 $bad = $c | ConvertTo-Json -Depth 12 | ConvertFrom-Json; $bad.general.refresh_interval_ms = 5
