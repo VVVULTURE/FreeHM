@@ -5,6 +5,7 @@
 
 use freehm_core::frames::{PresentSource, PresentTracker};
 use freehm_core::helper_proto::FrameReport;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS, WIN32_ERROR};
@@ -45,10 +46,31 @@ fn now_ns() -> u64 {
     qpc_to_ns(t as u64)
 }
 
+/// Event counters for `freehm-helper selftest`: all events, events per provider, accepted.
+static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+
+pub fn debug_counts() -> String {
+    let c: Vec<u64> = COUNTS.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    format!("events received {} (DXGI {}, D3D9 {}, DxgKrnl {}), accepted as presents {}", c[0], c[1], c[2], c[3], c[4])
+}
+
 unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     let r = unsafe { &*rec };
     let h = &r.EventHeader;
     let id = h.EventDescriptor.Id;
+    COUNTS[0].fetch_add(1, Ordering::Relaxed);
+    let which = if h.ProviderId == DXGI {
+        1
+    } else if h.ProviderId == D3D9 {
+        2
+    } else if h.ProviderId == DXGKRNL {
+        3
+    } else {
+        0
+    };
+    if which > 0 {
+        COUNTS[which].fetch_add(1, Ordering::Relaxed);
+    }
     let src = if h.ProviderId == DXGI && id == 0x2A {
         PresentSource::Dxgi
     } else if h.ProviderId == D3D9 && id == 1 {
@@ -61,6 +83,7 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     if r.UserContext.is_null() {
         return;
     }
+    COUNTS[4].fetch_add(1, Ordering::Relaxed);
     let tracker = unsafe { &*(r.UserContext as *const Mutex<PresentTracker>) };
     if let Ok(mut t) = tracker.lock() {
         t.record(h.ProcessId, src, qpc_to_ns(h.TimeStamp as u64));
@@ -106,6 +129,11 @@ fn check(e: WIN32_ERROR, what: &str) -> Result<(), String> {
 
 /// Enable `provider` limited to the given event ids.
 fn enable(handle: CONTROLTRACE_HANDLE, provider: &GUID, keywords: u64, ids: &[u16]) -> Result<(), String> {
+    if std::env::var_os("FREEHM_ETW_NOFILTER").is_some() {
+        // Diagnostics only: no event-id filter.
+        let e = unsafe { EnableTraceEx2(handle, provider, EVENT_CONTROL_CODE_ENABLE_PROVIDER.0, TRACE_LEVEL_VERBOSE as u8, keywords, 0, 0, None) };
+        return check(e, "EnableTraceEx2");
+    }
     // EVENT_FILTER_EVENT_ID: BOOLEAN FilterIn; UCHAR Reserved; USHORT Count; USHORT Events[].
     let mut filter: Vec<u16> = vec![1, ids.len() as u16];
     filter.extend_from_slice(ids);

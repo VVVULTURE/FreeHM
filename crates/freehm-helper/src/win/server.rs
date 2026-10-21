@@ -209,6 +209,7 @@ pub fn selftest() -> i32 {
         Some(f) => println!("frame timing unavailable: {}", f.reason.unwrap_or_default()),
         None => {}
     }
+    println!("{}", super::etw::debug_counts());
     s.shutdown();
     0
 }

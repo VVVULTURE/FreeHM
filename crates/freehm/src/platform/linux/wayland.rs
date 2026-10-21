@@ -126,11 +126,12 @@ impl State {
             layer.set_margin(margins.0, margins.1, margins.2, margins.3);
             layer.set_size(size.0, size.1);
             self.layer_geom = Some(geom);
-            if self.configured {
-                // Ask for a configure for the new size before attaching a new buffer.
-                self.configured = false;
+            // Only the first buffer must wait for a configure. Later geometry changes are
+            // applied together with the new buffer (a compositor need not send a configure
+            // when only the margins change).
+            if !self.configured {
+                layer.commit();
             }
-            layer.commit();
         }
         self.pending = Some((pm, scale));
         if self.configured {
