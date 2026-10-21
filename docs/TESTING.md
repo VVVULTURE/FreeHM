@@ -1,0 +1,148 @@
+# Testing
+
+This page lists what has been checked, how, and on which machines. Anything not listed
+here has **not** been verified. "CI" means the GitHub Actions workflow in
+`.github/workflows/ci.yml` (hosted `windows-latest` and `ubuntu-latest` runners: no GPU,
+no game, virtual displays). "Local" means the developer PC:
+
+| | |
+|---|---|
+| CPU | Intel Core i7-12700KF (12 cores / 20 threads) |
+| GPU | NVIDIA (NVML available) |
+| OS | Windows 11 Pro 10.0.26200, 2560×1440 + second monitor |
+
+## Automated tests
+
+`cargo test --workspace` runs on every push, on Windows and on Linux.
+
+| Crate | Tests | Covers |
+|---|---|---|
+| freehm-core | 84 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, late or out-of-order events, bounded memory), game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
+| freehm | 10 on Windows, 19 on Linux (adds `/proc` probe and permission tests) | path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
+| freehm-helper | 4 | protocol, embedded PawnIO module hashes, request validation |
+
+The telemetry engine and overlay are also tested through the **mock provider**
+(`freehm --mock`), which produces moving values for every metric, including unavailable
+and stale ones, so the whole pipeline can be exercised without real sensors.
+
+## End-to-end tests
+
+### Windows (`tools/ci/windows-smoke-test.ps1`): CI and local, all pass
+
+The script starts the real application (with the mock provider) and checks it from outside.
+
+* The overlay window is shown and has `WS_EX_LAYERED | TRANSPARENT | TOPMOST | TOOLWINDOW | NOACTIVATE`.
+* The overlay never becomes the foreground window.
+* Click-through: `WindowFromPoint` over the overlay returns the window underneath.
+* Ctrl+Shift+O (RegisterHotKey) hides and shows it, driven by synthetic key presses.
+* `--quit` exits and leaves no window behind.
+* With `-Helper` (elevated):
+  * The helper service installs as LocalSystem.
+  * Its required privileges are restricted to SeChangeNotify and SeCreateGlobal.
+  * It starts automatically and restarts on failure.
+  * It uninstalls cleanly.
+  * Frame timing is checked against a real D3D11 swap chain, `present_loop` (FPS results below).
+
+The CI job also builds the Inno Setup installer and checks it:
+1. Installs it silently with the helper.
+2. Checks the installed files and licence texts.
+3. Uninstalls it silently and confirms that the service and files are gone.
+
+### Linux (`tools/ci/linux-overlay-test.sh`): CI, all 11 checks pass
+
+* **X11 (Xvfb):**
+  * The overlay window is mapped and override-redirect.
+  * Click-through: the window under the pointer is not the overlay, because its input shape is empty.
+  * The Ctrl+Shift+O key grab toggles it.
+  * A second program holding the same grab is reported as a conflict.
+  * It quits cleanly.
+* **Wayland (headless sway):**
+  * The layer-shell backend is selected and outputs are reported.
+  * The shortcut status honestly says that no GlobalShortcuts portal is available.
+  * `freehm --toggle` works as the fallback.
+  * It quits cleanly.
+* Screenshots of both are kept as CI artifacts.
+* `.deb` and AppImage packages are built.
+
+### Manual checks on the local PC
+
+| Check | Result |
+|---|---|
+| Overlay renders over the desktop at 200 ms with real sensors (screenshots) | pass |
+| Installer: elevated silent install with helper, uninstall, reinstall | pass |
+| Helper service account/privileges/ACLs on a real install | pass |
+| CPU temperature (28–42 °C) and package power via the helper reach the unprivileged app | pass |
+| NVIDIA GPU usage, temperature and VRAM via NVML, shown in the overlay (GPU clock and power not displayed in that test) | pass |
+| Settings window opens and renders (General page screenshot); other pages and live preview not checked by hand | partial |
+| Startup to IPC ready | 130–150 ms |
+
+One transient rendering glitch (a green block in one screenshot) was seen once and could
+not be reproduced in the next 12 frames. Its cause is unknown.
+
+## FPS and frame time (Windows)
+
+Checked in CI with `present_loop` (`crates/freehm-helper/examples/present_loop.rs`), a
+minimal "game". It is a window that presents through a Direct3D 11 flip-model swap chain
+with vsync. On the CI runner (60 Hz virtual display) the results were:
+
+| Path | Result |
+|---|---|
+| `freehm-helper selftest`: ETW session → present tracker | 587 present events in 4 s (DXGI 291, DxgKrnl 296); presenter at **61.2 FPS / 16.90 ms** |
+| App → helper service (named pipe) → overlay readings, with `present_loop.exe` detected as the game | **FPS 62.1, frame time 15.81 ms, Fresh** |
+
+Both agree with the expected ~60 FPS at vsync. The newest event reached the helper about
+0.5 s after it was presented, because ETW delivers real-time events in buffers. The
+statistics therefore use the last second of *received* presents and allow up to 1 s of
+delivery delay (unit-tested).
+
+History: before 2026-10-21 the helper produced no FPS at all. Its counters showed present
+events arriving and being recorded, yet none fell inside the statistics window. The
+probable cause was raw event timestamps being compared with a clock in a different domain.
+That was never confirmed directly. The fix removes the possibility: events are now
+delivered as system time and compared with `GetSystemTimePreciseAsFileTime`. The window was
+also made tolerant of delivery delay, and since then the checks above pass.
+
+Not yet verified on a real GPU at high refresh rates, nor against PresentMon or the NVIDIA
+overlay in a real game.
+
+## Performance
+
+Measured with `tools/perf/measure.ps1`. Each state starts a fresh instance, lets it run for
+5 s, then samples it for 30 s. CPU is the process's CPU time ÷ wall time, as a percentage of
+one logical core (the machine has 20). Local PC, release build, NVML loaded.
+
+| State | CPU (one core) | Working set | Private |
+|---|---|---|---|
+| Tray only, no game, overlay hidden (nothing polled) | 0.00 % | 20 MB | 9 MB |
+| Overlay shown, 200 ms (default) | 0.21 % | 48 MB | 33 MB |
+| Overlay shown, 1000 ms | < 0.05 % (below Windows' 15.6 ms CPU-time resolution over 30 s) | 48 MB | 33 MB |
+| Overlay shown, 50 ms (fastest) | 0.88 % | 48 MB | 33 MB |
+| Overlay over a running app (game detection, 200 ms) | 0.26 % | 48 MB | 33 MB |
+| Helper service, idle | 0.00 % | 9 MB | |
+
+The first measurement found 6 % of a core at 200 ms. Per-provider timing
+(`FREEHM_PROFILE=1`) showed the WDDM GPU statistics queries costing about 10 ms per poll,
+duplicating what NVML already provided. Two changes fixed this:
+* Lower-priority providers now skip metrics that a higher-priority provider has already delivered.
+* Those queries run at most every 500 ms.
+
+Most of the 28 MB difference in working set between hidden and visible is the NVIDIA
+driver's NVML library, which is loaded only while metrics are polled.
+
+The "over a game" state used a desktop application added to the manual game list, not a
+real game. The overlay's cost does not depend on what is underneath it, but this has not
+been measured over a real game.
+
+## Not tested
+
+These have **not** been verified. Treat them as unknown:
+
+* **Real games**: no real game has been run with FreeHM yet, so there is no FPS comparison against PresentMon or the NVIDIA overlay.
+* **Exclusive fullscreen**: warning detection is unit-tested, but has not been tried with a real exclusive-fullscreen game.
+* **AMD and Intel GPUs**: the Windows WDDM path and the Linux amdgpu, i915 and xe paths have only run where there is no such GPU. AMD CPUs (PawnIO SMN module, `k10temp`) are untested too.
+* **Tray menus**: clicking the tray menus on Windows and on a real Linux desktop (KDE, GNOME with AppIndicator).
+* **Real Linux desktops**: the GlobalShortcuts portal on KDE or GNOME 48+, and the overlay on KDE, GNOME, Hyprland and others. CI covers only Xvfb and headless sway.
+* **Linux permission setup**: the RAPL `pkexec` setup has not been run on a real Linux machine.
+* **Sleep/resume**: on both platforms, only the code path exists.
+* **Multi-monitor placement**: placement on the second monitor and DPI changes while running.
+* **Anti-cheat**: behaviour with anti-cheat products is unknown.

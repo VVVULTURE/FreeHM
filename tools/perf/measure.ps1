@@ -63,8 +63,13 @@ function Measure-State([string]$name) {
     Start-Sleep -Seconds 5   # settle: providers initialised, first frames drawn
 
     $p.Refresh()
-    $helper = Get-Process freehm-helper -ErrorAction SilentlyContinue | Select-Object -First 1
-    $hcpu0 = if ($helper) { $helper.TotalProcessorTime } else { $null }
+    # The helper runs as LocalSystem, so an unelevated shell cannot open its process handle;
+    # the Process performance counters are readable by everyone. NextValue() averages over
+    # the time between its two calls.
+    $hcpu = $null
+    if (Get-Process freehm-helper -ErrorAction SilentlyContinue) {
+        try { $hcpu = New-Object Diagnostics.PerformanceCounter("Process", "% Processor Time", "freehm-helper"); $null = $hcpu.NextValue() } catch { $hcpu = $null }
+    }
     $cpu0 = $p.TotalProcessorTime; $t0 = [Diagnostics.Stopwatch]::StartNew()
     $ws = @(); $priv = @()
     for ($s = 0; $s -lt $Seconds; $s++) {
@@ -75,8 +80,11 @@ function Measure-State([string]$name) {
     $cpuMs = ($p.TotalProcessorTime - $cpu0).TotalMilliseconds
     $wall = $t0.Elapsed.TotalMilliseconds
     $helperPct = $null; $helperWs = $null
-    if ($helper -and $null -ne $hcpu0) {
-        try { $helper.Refresh(); $helperPct = [math]::Round(($helper.TotalProcessorTime - $hcpu0).TotalMilliseconds / $wall * 100, 3); $helperWs = [math]::Round($helper.WorkingSet64 / 1MB, 1) } catch {}
+    if ($hcpu) {
+        try {
+            $helperPct = [math]::Round($hcpu.NextValue(), 3)
+            $helperWs = [math]::Round((New-Object Diagnostics.PerformanceCounter("Process", "Working Set", "freehm-helper")).NextValue() / 1MB, 1)
+        } catch {}
     }
     $st = (& $exe --status | Out-String) | ConvertFrom-Json
     & $exe --quit | Out-Null

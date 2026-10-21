@@ -101,7 +101,42 @@ x11_test() {
     jq -r .hotkey.error "$OUT/x11-conflict-status.json" | grep -q "already used" || fail "X11: conflict not explained"
     pass "X11: shortcut conflict reported: $(jq -r .hotkey.error "$OUT/x11-conflict-status.json")"
 
+    # Settings changes go through the same IPC request the settings window sends.
+    CFG="$FREEHM_CONFIG_DIR/edited.json"
+    st | jq '.config | .hotkeys.toggle_overlay = "Ctrl+Shift+Alt+K" | .general.refresh_interval_ms = 500
+             | .general.start_with_system = true | .overlay.anchor = "BottomLeft" | .overlay.font_size = 21
+             | (.metrics[] | select(.id == "CpuClock") | .enabled) = true | .detection.manual_games = ["mygame"]' > "$CFG"
+    "$BIN" --apply-config "$CFG" || fail "X11: --apply-config failed"
+    [ "$(st | jq -r '.hotkey.registered and .hotkey.shortcut == "Ctrl+Shift+Alt+K"')" = true ] || fail "X11: new shortcut not active: $(st | jq -c .hotkey)"
+    xdotool key ctrl+shift+o; sleep 0.6
+    [ "$(st | jq -r .overlay.visible)" = true ] || fail "X11: the old shortcut still works after changing it"
+    xdotool key ctrl+shift+alt+k; sleep 0.6
+    [ "$(st | jq -r .overlay.visible)" = false ] || fail "X11: the new shortcut does not toggle the overlay"
+    xdotool key ctrl+shift+alt+k; sleep 0.6
+    pass "X11: shortcut changed at runtime: Ctrl+Shift+Alt+K toggles, Ctrl+Shift+O released"
+    AUTO="$XDG_CONFIG_HOME/autostart/freehm.desktop"
+    grep -q '^Exec=".*/freehm" --background$' "$AUTO" || fail "X11: enabling startup did not write $AUTO"
+    [ "$(st | jq -r .autostart.enabled)" = true ] || fail "X11: autostart not reported enabled"
+    pass "X11: start with system on: $AUTO ($(grep ^Exec= "$AUTO"))"
+    jq '.general.start_with_system = false' "$CFG" > "$CFG.2" && mv "$CFG.2" "$CFG"
+    "$BIN" --apply-config "$CFG" || fail "X11: --apply-config failed"
+    [ "$(st | jq -r .autostart.enabled)" = false ] || fail "X11: disabling startup left autostart enabled"
+    pass "X11: start with system off: $( [ -e "$AUTO" ] && echo "entry disabled" || echo "entry removed")"
+    jq '.general.refresh_interval_ms = 5' "$CFG" > "$CFG.bad"
+    if MSG=$("$BIN" --apply-config "$CFG.bad" 2>&1); then fail "X11: an out-of-range interval was accepted"; fi
+    [ "$(st | jq -r .config.general.refresh_interval_ms)" = 500 ] || fail "X11: a rejected configuration changed the settings"
+    pass "X11: invalid configuration rejected without changing anything: $MSG"
+
     stop_app X11
+    # The edited settings survive a restart.
+    start_app X11-restart
+    st > "$OUT/x11-restart-status.json"
+    jq -e '.config | .hotkeys.toggle_overlay == "Ctrl+Shift+Alt+K" and .general.refresh_interval_ms == 500 and .overlay.anchor == "BottomLeft"
+           and .overlay.font_size == 21 and (.metrics[] | select(.id == "CpuClock") | .enabled) and .detection.manual_games == ["mygame"]
+           and (.general.start_with_system | not)' "$OUT/x11-restart-status.json" > /dev/null || fail "X11: settings lost across restart: $(jq -c .config "$OUT/x11-restart-status.json")"
+    [ "$(jq -r .hotkey.registered "$OUT/x11-restart-status.json")" = true ] || fail "X11: saved shortcut not registered after restart"
+    pass "X11: settings persisted across restart (shortcut, interval, position, font size, metric selection, manual games, startup)"
+    stop_app X11-restart
     kill "$XT" "$XVFB" 2>/dev/null || true
     wait "$XVFB" 2>/dev/null || true
 }

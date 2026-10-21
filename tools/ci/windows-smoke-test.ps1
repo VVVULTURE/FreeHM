@@ -34,6 +34,12 @@ public static class W {
 }
 "@
 
+# Start with autostart off so the machine's own startup entry is never pointed at this build.
+New-Item -ItemType Directory -Force $env:FREEHM_CONFIG_DIR | Out-Null
+@{ schema_version = 1; general = @{ start_with_system = $false }; permissions = @{ first_run_done = $true } } | ConvertTo-Json -Depth 5 | Set-Content "$env:FREEHM_CONFIG_DIR\config.json" -Encoding utf8
+$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$prevRun = (Get-ItemProperty $runKey -Name FreeHM -ErrorAction SilentlyContinue).FreeHM
+
 $app = Start-Process $exe -ArgumentList "--mock" -PassThru
 $ok = $false
 for ($i = 0; $i -lt 75; $i++) { Start-Sleep -Milliseconds 200; try { $null = Status; $ok = $true; break } catch {} }
@@ -68,11 +74,61 @@ if ([W]::IsWindowVisible($h)) { Fail "overlay window still visible after hide" }
 if (-not (Status).overlay.visible) { Fail "Ctrl+Shift+O did not show the overlay again" }
 Pass "Ctrl+Shift+O (RegisterHotKey) toggles the overlay"
 
+# Settings changes go through the same IPC request the settings window sends.
+$cfgFile = Join-Path $env:FREEHM_CONFIG_DIR "edited.json"
+$c = (Status).config
+$c.hotkeys.toggle_overlay = "Ctrl+Shift+Alt+K"
+$c.general.refresh_interval_ms = 500
+$c.general.start_with_system = $true
+$c.overlay.anchor = "BottomLeft"; $c.overlay.font_size = 21.0; $c.overlay.font = @{ System = @{ family = "Segoe UI"; path = $null } }
+($c.metrics | Where-Object id -eq "CpuClock").enabled = $true
+$c.detection.manual_games = @("mygame.exe")
+$c | ConvertTo-Json -Depth 12 | Set-Content $cfgFile -Encoding utf8
+& $exe --apply-config $cfgFile; if ($LASTEXITCODE -ne 0) { Fail "--apply-config failed" }
+$s = Status
+if (-not $s.hotkey.registered -or $s.hotkey.shortcut -ne "Ctrl+Shift+Alt+K") { Fail "new shortcut not active: $($s.hotkey | ConvertTo-Json -Compress)" }
+[W]::Chord([byte[]](0x11, 0x10, 0x4F)); Start-Sleep -Milliseconds 700
+if (-not (Status).overlay.visible) { Fail "the old shortcut Ctrl+Shift+O still works after changing it" }
+[W]::Chord([byte[]](0x11, 0x10, 0x12, 0x4B)); Start-Sleep -Milliseconds 700
+if ((Status).overlay.visible) { Fail "the new shortcut Ctrl+Shift+Alt+K does not toggle the overlay" }
+[W]::Chord([byte[]](0x11, 0x10, 0x12, 0x4B)); Start-Sleep -Milliseconds 700
+Pass "shortcut changed at runtime: Ctrl+Shift+Alt+K toggles, Ctrl+Shift+O released"
+$run = (Get-ItemProperty $runKey -Name FreeHM -ErrorAction SilentlyContinue).FreeHM
+if (-not $s.autostart.enabled -or $run -notlike "*freehm.exe*") { Fail "enabling startup did not create the Run entry ($run)" }
+Pass "start with Windows on: $runKey\FreeHM = $run"
+$c.general.start_with_system = $false
+$c | ConvertTo-Json -Depth 12 | Set-Content $cfgFile -Encoding utf8
+& $exe --apply-config $cfgFile; if ($LASTEXITCODE -ne 0) { Fail "--apply-config failed" }
+if ((Get-ItemProperty $runKey -Name FreeHM -ErrorAction SilentlyContinue) -or (Status).autostart.enabled) { Fail "disabling startup left the Run entry" }
+Pass "start with Windows off: Run entry removed"
+$bad = $c | ConvertTo-Json -Depth 12 | ConvertFrom-Json; $bad.general.refresh_interval_ms = 5
+$bad | ConvertTo-Json -Depth 12 | Set-Content $cfgFile -Encoding utf8
+$msg = & $exe --apply-config $cfgFile 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0) { Fail "an out-of-range interval was accepted" }
+if ((Status).config.general.refresh_interval_ms -ne 500) { Fail "a rejected configuration changed the running settings" }
+Pass "invalid configuration rejected without changing anything: $($msg.Trim())"
+
 & $exe --quit
 if (-not $app.WaitForExit(10000)) { Fail "FreeHM did not exit after --quit" }
 if ([W]::FindWindow("FreeHM.Overlay", "FreeHM Overlay") -ne [IntPtr]::Zero) { Fail "overlay window left behind" }
 Pass "--quit exits (code $($app.ExitCode)) and leaves no overlay window"
 Copy-Item "$env:FREEHM_CONFIG_DIR\logs\*.log" $Out -ErrorAction SilentlyContinue
+
+# The edited settings survive a restart.
+$app = Start-Process $exe -ArgumentList "--mock" -PassThru
+$ok = $false
+for ($i = 0; $i -lt 75; $i++) { Start-Sleep -Milliseconds 200; try { $s = Status; $ok = $true; break } catch {} }
+if (-not $ok) { Fail "FreeHM did not restart" }
+$k = $s.config
+$checks = @{ shortcut = $k.hotkeys.toggle_overlay -eq "Ctrl+Shift+Alt+K"; interval = $k.general.refresh_interval_ms -eq 500; anchor = $k.overlay.anchor -eq "BottomLeft"
+             font = $k.overlay.font.System.family -eq "Segoe UI" -and $k.overlay.font_size -eq 21; metric = ($k.metrics | Where-Object id -eq "CpuClock").enabled; games = $k.detection.manual_games -contains "mygame.exe"
+             startup = -not $k.general.start_with_system }
+$lost = $checks.Keys | Where-Object { -not $checks[$_] }
+if ($lost) { Fail "settings lost across restart: $lost" }
+if (-not $s.hotkey.registered) { Fail "saved shortcut not registered after restart: $($s.hotkey.error)" }
+Pass "settings persisted across restart (shortcut, interval, position, font, metric selection, manual games, startup)"
+& $exe --quit | Out-Null; $null = $app.WaitForExit(10000)
+if ($prevRun) { Set-ItemProperty $runKey -Name FreeHM -Value $prevRun }
 
 if ($Helper) {
     $hx = (Resolve-Path "$Bin\freehm-helper.exe").Path
