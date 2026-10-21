@@ -128,6 +128,8 @@ pub struct App {
     monitors_at: Instant,
     capture_excluded: bool,
     exiting: bool,
+    /// `FREEHM_PROFILE=1`: (render time, present time, redraws), logged every 50 redraws.
+    profile: Option<(Duration, Duration, u32)>,
 }
 
 impl App {
@@ -163,6 +165,7 @@ impl App {
             monitors_at: Instant::now(),
             capture_excluded: false,
             exiting: false,
+            profile: std::env::var_os("FREEHM_PROFILE").map(|_| (Duration::ZERO, Duration::ZERO, 0)),
         };
         p.on_config(&app.cfg);
         app.monitors = p.monitors();
@@ -456,14 +459,25 @@ impl App {
         {
             return; // nothing changed: no rasterization, no window update
         }
+        let t0 = Instant::now();
         let pm = self.renderer.render(&rows, &style);
         if pm.width == 0 {
             p.overlay_hide();
             self.last_drawn = None;
             return;
         }
+        let t1 = Instant::now();
         let place = compute_placement(&mon, &self.cfg, pm.width, pm.height);
         p.overlay_show(&pm, &place);
+        if let Some((render, present, n)) = &mut self.profile {
+            *render += t1 - t0;
+            *present += t1.elapsed();
+            *n += 1;
+            if *n == 50 {
+                log::info!("profile: mean render {:.2} ms, present {:.2} ms", render.as_secs_f64() * 20.0, present.as_secs_f64() * 20.0);
+                *self.profile.as_mut().unwrap() = (Duration::ZERO, Duration::ZERO, 0);
+            }
+        }
         self.last_drawn = Some((rows, style, place));
     }
 

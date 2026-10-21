@@ -63,6 +63,8 @@ function Measure-State([string]$name) {
     Start-Sleep -Seconds 5   # settle: providers initialised, first frames drawn
 
     $p.Refresh()
+    $helper = Get-Process freehm-helper -ErrorAction SilentlyContinue | Select-Object -First 1
+    $hcpu0 = if ($helper) { $helper.TotalProcessorTime } else { $null }
     $cpu0 = $p.TotalProcessorTime; $t0 = [Diagnostics.Stopwatch]::StartNew()
     $ws = @(); $priv = @()
     for ($s = 0; $s -lt $Seconds; $s++) {
@@ -72,6 +74,10 @@ function Measure-State([string]$name) {
     $p.Refresh()
     $cpuMs = ($p.TotalProcessorTime - $cpu0).TotalMilliseconds
     $wall = $t0.Elapsed.TotalMilliseconds
+    $helperPct = $null; $helperWs = $null
+    if ($helper -and $null -ne $hcpu0) {
+        try { $helper.Refresh(); $helperPct = [math]::Round(($helper.TotalProcessorTime - $hcpu0).TotalMilliseconds / $wall * 100, 3); $helperWs = [math]::Round($helper.WorkingSet64 / 1MB, 1) } catch {}
+    }
     $st = (& $exe --status | Out-String) | ConvertFrom-Json
     & $exe --quit | Out-Null
     $null = $p.WaitForExit(10000)
@@ -89,6 +95,8 @@ function Measure-State([string]$name) {
         working_set_mb_avg   = [math]::Round(($ws | Measure-Object -Average).Average / 1MB, 1)
         working_set_mb_max   = [math]::Round(($ws | Measure-Object -Maximum).Maximum / 1MB, 1)
         private_mb_avg       = [math]::Round(($priv | Measure-Object -Average).Average / 1MB, 1)
+        helper_cpu_percent_one_core = $helperPct
+        helper_working_set_mb       = $helperWs
         seconds              = $Seconds
     }
 }

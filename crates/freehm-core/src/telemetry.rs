@@ -88,6 +88,10 @@ pub trait Provider: Send {
     }
     /// Called when the system resumes from sleep or the display configuration changes.
     fn on_resume(&mut self) {}
+    /// Called before each `poll` with the (device, metric) pairs that higher-priority
+    /// providers have already read fresh in this cycle, so an expensive read whose result
+    /// would be discarded can be skipped.
+    fn set_covered(&mut self, _covered: &[(String, MetricId)]) {}
 }
 
 enum SlotState {
@@ -124,6 +128,9 @@ pub struct Engine {
     entries: HashMap<(String, MetricId), Entry>,
     seq: u64,
     scratch: Vec<Sample>,
+    covered: Vec<(String, MetricId)>,
+    /// `FREEHM_PROFILE=1`: per-provider poll time, logged every 50 polls.
+    profile: Option<(Vec<Duration>, u32)>,
 }
 
 impl Engine {
@@ -133,7 +140,8 @@ impl Engine {
             .into_iter()
             .map(|p| Slot { provider: p, state: SlotState::Uninit, devices: vec![], last_read: None, failures: 0, last_error: None })
             .collect();
-        Engine { slots, entries: HashMap::new(), seq: 0, scratch: Vec::new() }
+        let profile = std::env::var_os("FREEHM_PROFILE").map(|_| (Vec::new(), 0));
+        Engine { slots, entries: HashMap::new(), seq: 0, scratch: Vec::new(), covered: Vec::new(), profile }
     }
 
     pub fn on_resume(&mut self, now: Instant) {
@@ -195,7 +203,19 @@ impl Engine {
                 continue;
             }
             self.scratch.clear();
-            match slot.provider.poll(req, &mut self.scratch) {
+            if idx > 0 {
+                self.covered.clear();
+                self.covered.extend(self.entries.iter().filter(|(_, e)| e.fresh && e.value.is_some() && e.provider < idx).map(|(k, _)| k.clone()));
+                slot.provider.set_covered(&self.covered);
+            }
+            let started = Instant::now();
+            let result = slot.provider.poll(req, &mut self.scratch);
+            if let Some((times, _)) = &mut self.profile {
+                times.resize(self.slots.len(), Duration::ZERO);
+                times[idx] += started.elapsed();
+            }
+            let slot = &mut self.slots[idx];
+            match result {
                 Ok(()) => {
                     slot.last_read = Some(now);
                     if slot.failures > 0 {
@@ -221,6 +241,16 @@ impl Engine {
         }
 
         self.seq += 1;
+        if let Some((times, n)) = &mut self.profile {
+            *n += 1;
+            if *n == 50 {
+                let parts: Vec<String> =
+                    times.iter().enumerate().map(|(i, t)| format!("{} {:.2} ms", self.slots[i].provider.name(), t.as_secs_f64() * 1000.0 / 50.0)).collect();
+                log::info!("profile: mean poll time per provider: {}", parts.join(", "));
+                times.iter_mut().for_each(|t| *t = Duration::ZERO);
+                *n = 0;
+            }
+        }
         self.build_snapshot(now, interval, &cached_providers)
     }
 
@@ -708,6 +738,33 @@ mod tests {
         // Later cycles keep the same assignment (the unavailable sample doesn't evict it).
         let s = e.poll(Instant::now() + IV, &all(), IV);
         assert_eq!(s.get("cpu:0", MetricId::CpuTemp).unwrap().value, Some(55.0));
+    }
+
+    #[test]
+    fn lower_priority_provider_is_told_what_is_already_covered() {
+        struct Spy(std::sync::Arc<std::sync::Mutex<Vec<(String, MetricId)>>>);
+        impl Provider for Spy {
+            fn name(&self) -> &'static str {
+                "spy"
+            }
+            fn init(&mut self) -> Result<Vec<DeviceInfo>, String> {
+                Ok(vec![])
+            }
+            fn poll(&mut self, _: &PollRequest, _: &mut Vec<Sample>) -> Result<(), String> {
+                Ok(())
+            }
+            fn set_covered(&mut self, covered: &[(String, MetricId)]) {
+                *self.0.lock().unwrap() = covered.to_vec();
+            }
+        }
+        let (a, sa) = MockProvider::new(vec![gpu("gpu:0")]);
+        set(&sa, "gpu:0", MetricId::GpuUsage, SampleValue::Value(40.0));
+        set(&sa, "gpu:0", MetricId::GpuPower, SampleValue::Unavailable("no".into()));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut e = Engine::new(vec![Box::new(a), Box::new(Spy(seen.clone()))]);
+        e.poll(Instant::now(), &all(), IV);
+        let c = seen.lock().unwrap().clone();
+        assert_eq!(c, vec![("gpu:0".to_string(), MetricId::GpuUsage)], "only fresh values from earlier providers count");
     }
 
     #[test]

@@ -105,6 +105,27 @@ pub fn single_instance() -> Option<InstanceGuard> {
     }
 }
 
+/// Single instance of the settings window. When one is already open, bring it to the
+/// front and return `None`.
+pub fn settings_instance() -> Option<InstanceGuard> {
+    let name = wide(&format!("Local\\FreeHM.Settings.{}", util::current_user_sid().unwrap_or_default()));
+    unsafe {
+        let h = CreateMutexW(None, false, PCWSTR(name.as_ptr())).ok()?;
+        if windows::Win32::Foundation::GetLastError() == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
+            let _ = util::OwnedHandle(h);
+            let title = wide("FreeHM Settings");
+            if let Ok(w) = FindWindowW(PCWSTR::null(), PCWSTR(title.as_ptr())) {
+                if IsIconic(w).as_bool() {
+                    let _ = ShowWindow(w, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(w);
+            }
+            return None;
+        }
+        Some(InstanceGuard(util::OwnedHandle(h)))
+    }
+}
+
 pub fn set_dpi_awareness() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);

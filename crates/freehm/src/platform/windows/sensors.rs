@@ -15,7 +15,7 @@ use super::util::{from_wide, reg_string};
 use crate::sensors::nvml::pci_device_id;
 use freehm_core::metrics::{DEVICE_MEMORY, DeviceInfo, DeviceKind, MetricId, Vendor};
 use freehm_core::telemetry::{PollRequest, Provider, Sample};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use windows::Wdk::Graphics::Direct3D::*;
 use windows::Win32::Foundation::LUID;
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
@@ -174,11 +174,25 @@ struct Adapter {
 pub struct WddmGpuProvider {
     adapters: Vec<Adapter>,
     pdh: Option<(Query, Option<Counter>, Option<Counter>)>,
+    mem_read_at: Option<Instant>,
+    /// Values a higher-priority provider (NVML) already read this cycle.
+    covered: Vec<(String, MetricId)>,
 }
+
+/// Engine running times come from one `D3DKMTQueryStatistics` call per engine (about
+/// 0.7 ms each, 14 engines on a current NVIDIA GPU), so utilisation is sampled at most
+/// every 500 ms — and not at all when NVML already provides it.
+const GPU_USAGE_PERIOD: Duration = Duration::from_millis(500);
+
+/// Collecting the `GPU Adapter Memory` counter set walks every process's GPU allocations
+/// (about 10 ms on a desktop with many processes), and memory use changes slowly, so it is
+/// read at most once per second. In between no memory samples are produced and the engine
+/// reports the last values as cached.
+const GPU_MEMORY_PERIOD: Duration = Duration::from_secs(1);
 
 impl WddmGpuProvider {
     pub fn new() -> WddmGpuProvider {
-        WddmGpuProvider { adapters: Vec::new(), pdh: None }
+        WddmGpuProvider { adapters: Vec::new(), pdh: None, mem_read_at: None, covered: Vec::new() }
     }
 
     fn close(&mut self) {
@@ -296,7 +310,14 @@ impl Provider for WddmGpuProvider {
 
     fn poll(&mut self, req: &PollRequest, out: &mut Vec<Sample>) -> Result<(), String> {
         let m = req.metrics;
-        let want_mem = m.any_of(&[MetricId::VramUsed, MetricId::VramUsage, MetricId::VramTotal, MetricId::GpuSharedMem]);
+        let covered = &self.covered;
+        let is_covered = |id: &str, metric: MetricId| covered.iter().any(|(d, x)| d == id && *x == metric);
+        let mem_metrics = [MetricId::VramUsed, MetricId::VramUsage, MetricId::GpuSharedMem];
+        let want_mem = self.adapters.iter().any(|a| mem_metrics.iter().any(|&mm| m.contains(mm) && !is_covered(&a.id, mm)))
+            && self.mem_read_at.is_none_or(|t| t.elapsed() >= GPU_MEMORY_PERIOD);
+        if want_mem {
+            self.mem_read_at = Some(Instant::now());
+        }
         let (mut dedicated, mut shared) = (Vec::new(), Vec::new());
         if want_mem
             && let Some((q, d, s)) = self.pdh.as_mut()
@@ -311,7 +332,11 @@ impl Provider for WddmGpuProvider {
         }
         let now = Instant::now();
         for a in &mut self.adapters {
-            if m.contains(MetricId::GpuUsage) && a.node_count > 0 {
+            if m.contains(MetricId::GpuUsage) && is_covered(&a.id, MetricId::GpuUsage) {
+                a.prev = None; // start a fresh interval if NVML ever stops providing it
+            } else if m.contains(MetricId::GpuUsage) && a.prev.as_ref().is_some_and(|(_, at)| now.duration_since(*at) < GPU_USAGE_PERIOD) {
+                // Between samples: the engine reports the last value as cached.
+            } else if m.contains(MetricId::GpuUsage) && a.node_count > 0 {
                 let mut times = Vec::with_capacity(a.node_count as usize);
                 for node in 0..a.node_count {
                     let t = query_stats(a.luid, D3DKMT_QUERYSTATISTICS_NODE, |q| q.Anonymous.QueryNode.NodeId = node)
@@ -392,6 +417,11 @@ impl Provider for WddmGpuProvider {
             }
         }
         Ok(())
+    }
+
+    fn set_covered(&mut self, covered: &[(String, MetricId)]) {
+        self.covered.clear();
+        self.covered.extend_from_slice(covered);
     }
 
     fn on_resume(&mut self) {

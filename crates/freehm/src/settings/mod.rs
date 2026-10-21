@@ -449,6 +449,10 @@ impl eframe::App for SettingsApp {
 pub fn run() -> i32 {
     #[cfg(windows)]
     crate::platform::set_dpi_awareness();
+    let Some(_instance) = crate::platform::settings_instance() else {
+        log::info!("settings window already open");
+        return 0;
+    };
     let icon = egui::IconData { rgba: crate::icon::icon_rgba(64), width: 64, height: 64 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

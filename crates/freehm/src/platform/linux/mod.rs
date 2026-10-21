@@ -42,6 +42,14 @@ pub fn single_instance() -> Option<InstanceGuard> {
     Some(InstanceGuard(f))
 }
 
+/// Single instance of the settings window (Wayland does not let us raise the open one).
+pub fn settings_instance() -> Option<InstanceGuard> {
+    let dir = ipc::ensure_runtime_dir().ok()?;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("settings.lock")).ok()?;
+    rustix::fs::flock(&f, rustix::fs::FlockOperation::NonBlockingLockExclusive).ok()?;
+    Some(InstanceGuard(f))
+}
+
 pub fn set_dpi_awareness() {}
 
 pub fn ipc_connect() -> std::io::Result<Box<dyn crate::ipc::ReadWrite + Send>> {
