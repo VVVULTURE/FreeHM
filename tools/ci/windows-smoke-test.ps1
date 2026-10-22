@@ -158,21 +158,23 @@ if ($Helper) {
         # warm-up must include the presenter. ETW buffers used to reach the helper 1-2 s
         # late unless requests were frequent, so slow refresh rates lost the FPS reading.
         # Ask only for the rights the pipe's ACL grants (InOut would add write-attributes).
-        $rights = [IO.Pipes.PipeAccessRights]::ReadData -bor [IO.Pipes.PipeAccessRights]::WriteData -bor [IO.Pipes.PipeAccessRights]::ReadAttributes -bor [IO.Pipes.PipeAccessRights]::Synchronize
-        $pipe = New-Object IO.Pipes.NamedPipeClientStream(".", "FreeHM.Helper.v1", $rights, [IO.Pipes.PipeOptions]::None, [Security.Principal.TokenImpersonationLevel]::Identification, [IO.HandleInheritability]::None)
-        $pipe.Connect(5000)
-        $ask = {
+        function HelperConnect {
+            $rights = [IO.Pipes.PipeAccessRights]::ReadData -bor [IO.Pipes.PipeAccessRights]::WriteData -bor [IO.Pipes.PipeAccessRights]::ReadAttributes -bor [IO.Pipes.PipeAccessRights]::Synchronize
+            $c = New-Object IO.Pipes.NamedPipeClientStream(".", "FreeHM.Helper.v1", $rights, [IO.Pipes.PipeOptions]::None, [Security.Principal.TokenImpersonationLevel]::Identification, [IO.HandleInheritability]::None)
+            $c.Connect(5000); $c
+        }
+        function HelperAsk($c) {
             $body = [Text.Encoding]::UTF8.GetBytes('{"v":1,"cpu":false,"frames":true}')
-            $pipe.Write([BitConverter]::GetBytes([uint32]$body.Length), 0, 4); $pipe.Write($body, 0, $body.Length); $pipe.Flush()
-            $read = { param($b, $len) $n = 0; while ($n -lt $len) { $k = $pipe.Read($b, $n, $len - $n); if ($k -le 0) { throw "helper pipe closed" }; $n += $k } }
+            $c.Write([BitConverter]::GetBytes([uint32]$body.Length), 0, 4); $c.Write($body, 0, $body.Length); $c.Flush()
+            $read = { param($b, $len) $n = 0; while ($n -lt $len) { $k = $c.Read($b, $n, $len - $n); if ($k -le 0) { throw "helper pipe closed" }; $n += $k } }
             $hdr = New-Object byte[] 4; & $read $hdr 4
-            $len = [BitConverter]::ToUInt32($hdr, 0); $buf = New-Object byte[] $len; $n = 0
-            while ($n -lt $len) { $n += $pipe.Read($buf, $n, $len - $n) }
+            $buf = New-Object byte[] ([BitConverter]::ToUInt32($hdr, 0)); & $read $buf $buf.Length
             [Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
         }
+        $pipe = HelperConnect
         $hits = 0; $ages = @()
         for ($i = 0; $i -lt 12; $i++) {
-            $r = & $ask
+            $r = HelperAsk $pipe
             $mine = $r.frames.processes | Where-Object pid -eq $presenter.Id
             if ($i -ge 2 -and $mine) { $hits++; $ages += $mine.stats.last_present_age_ms }
             Start-Sleep -Seconds 1
@@ -204,11 +206,17 @@ if ($Helper) {
         }
         $s2 | ConvertTo-Json -Depth 12 | Set-Content "$Out\windows-status-fps.json"
         & $exe --quit | Out-Null; $null = $app2.WaitForExit(10000)
-        if (-not $fps) { Fail "app shows no FPS for the detected game: $(($s2.snapshot.readings | Where-Object metric -eq 'Fps').reason)" }
+        if (-not $fps) {
+            # Tell a helper problem from an app problem: what does the service itself see now?
+            $seen = try { $c = HelperConnect; $r = HelperAsk $c; $c.Dispose(); ($r.frames.processes | ForEach-Object { "$($_.pid) $([math]::Round($_.stats.fps,1)) fps" }) -join ", " } catch { "query failed: $_" }
+            Copy-Item "$env:ProgramData\FreeHM\helper.log" "$Out\helper.log" -ErrorAction SilentlyContinue
+            Fail "app shows no FPS for the detected game (pid $($presenter.Id), presenter exited: $($presenter.HasExited)): $(($s2.snapshot.readings | Where-Object metric -eq 'Fps').reason); helper sees: [$seen]"
+        }
         $ft = $s2.snapshot.readings | Where-Object { $_.metric -eq "FrameTime" } | Select-Object -First 1
         Pass "app reads FPS $([math]::Round($fps.value,1)) / frame time $([math]::Round($ft.value,2)) ms for '$($s2.game.active.name)' through the helper ($($fps.freshness))"
         Stop-Process -Id $presenter.Id -ErrorAction SilentlyContinue
     }
+    Copy-Item "$env:ProgramData\FreeHM\helper.log" "$Out\helper.log" -ErrorAction SilentlyContinue
     & $hx uninstall 2>&1 | Tee-Object "$Out\helper-uninstall.txt"
     $st = (& $hx status | Out-String).Trim()
     if ($st -notmatch "not installed") { Fail "helper still installed after uninstall: $st" }
