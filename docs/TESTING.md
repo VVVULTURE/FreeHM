@@ -49,7 +49,9 @@ The script starts the real application (with the mock provider) and checks it fr
   * Its required privileges are restricted to SeChangeNotify and SeCreateGlobal.
   * It starts automatically and restarts on failure.
   * It uninstalls cleanly.
-  * Frame timing is checked against a real D3D11 swap chain, `present_loop` (FPS results below).
+  * Frame timing is checked against a real D3D11 swap chain, `present_loop` (FPS results below):
+    in-process selftest, the service at a 1 s request interval, recovery after the idle
+    stop, and the app's readings.
 
 The CI job also builds the Inno Setup installer and checks it:
 1. Installs it silently with the helper.
@@ -84,8 +86,19 @@ The CI job also builds the Inno Setup installer and checks it:
 | Helper service account/privileges/ACLs on a real install | pass |
 | CPU temperature (28–42 °C) and package power via the helper reach the unprivileged app | pass |
 | NVIDIA GPU usage, temperature and VRAM via NVML, shown in the overlay (GPU clock and power not displayed in that test) | pass |
-| Settings window opens and renders (General page screenshot); other pages and live preview not checked by hand | partial |
+| Settings window: all eight pages opened and screenshotted, live preview updating (2026-10-22) | pass, three bugs found and fixed (below) |
+| FPS on the real GPU (RTX 5070, 180 Hz) through the installed helper service | pass: 179.8–180.1 FPS vs. the presenter's own 179.7–180.1 |
+| Helper service CPU while serving FPS | 0.05 % of a core polled every 1 s, 0.10 % every 200 ms; 9.6 MB |
 | Startup to IPC ready | 130–150 ms |
+
+Bugs found by the settings hand-check (fixed in `a7af198`):
+* Status dots, the metric reorder arrows and the icon on "Repair helper" were drawn as
+  empty boxes, because egui 0.37 bundles its symbol fonts only behind an optional feature.
+  The dot and the "Repair helper" button were rechecked after the fix. The arrows were not,
+  because the user had come back to the PC by then.
+* The label fields on the Metrics page were cut off ("Fr…").
+* With no game detected, the Hardware page labelled the foreground application's frame
+  rate as "Active game".
 
 One transient rendering glitch (a green block in one screenshot) was seen once and could
 not be reproduced in the next 12 frames. Its cause is unknown.
@@ -116,8 +129,31 @@ That was never confirmed directly. The fix removes the possibility: events are n
 delivered as system time and compared with `GetSystemTimePreciseAsFileTime`. The window was
 also made tolerant of delivery delay, and since then the checks above pass.
 
-Not yet verified on a real GPU at high refresh rates, nor against PresentMon or the NVIDIA
-overlay in a real game.
+**Local, real GPU (2026-10-22).** These used `present_loop` on an RTX 5070 with a 180 Hz display,
+through the installed helper service:
+* The admin selftest measured 179.9 FPS.
+* The service, polled every 200 ms, reported 179.8–180.1 FPS for all 150 requests. The
+  presenter's own count was 179.7.
+
+**Bug found locally and fixed (`e257fd2`).** Polled only once a second, the service returned the presenter for
+just 7 of 30 requests, with the newest event 1.3 s old on average. Real-time ETW buffers are
+per CPU, so on a 20-thread machine they fill slowly. The flush that ran on each request was
+asynchronous and only helped the request after it. A helper thread now flushes the session
+every 200 ms.
+* CI checks this directly: the service is asked once a second for 12 s, and every answer
+  must include the presenter, with the newest present under 800 ms old. In run
+  39860420511 the presenter was in 10 of 10 answers, at most 242 ms old.
+* The fixed helper is **not yet installed** on the developer PC; that needs one more admin
+  approval.
+
+One CI run (on `e257fd2`) failed the app-level FPS check once. The service's own check had
+passed seconds earlier, and the next run passed. The cause is unknown. CI now saves the
+helper log, reports what the service sees when the app check fails, and tests that frame
+timing recovers after the helper's 10 s idle stop. That check, and everything else, passed
+in run 39861489268 (app 54.1 FPS).
+
+Not yet compared against PresentMon in a real game. The PresentMon bundled with NVIDIA FrameView
+on this PC produced no output in the one attempt, and a second admin approval timed out.
 
 ## Performance
 

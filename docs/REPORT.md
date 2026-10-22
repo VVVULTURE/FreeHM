@@ -79,7 +79,10 @@ The AMD/Intel GPU paths and AMD CPU paths have never run on such hardware.
 * **Verified in CI:**
   * Against a real D3D11 swap chain, the helper and the presenter's own count agree: 61.2 vs 61.0 FPS.
   * The full app → helper → overlay path reported 57–62 FPS, Fresh, for the detected test "game".
-* **Windows limitations:** FPS needs the helper service, which needs admin rights once at install. It has not been verified on a real GPU at high refresh rates, or compared with PresentMon in a real game.
+  * The service, asked once a second, includes the presenter in every answer, with the newest present at most 242 ms old.
+* **Verified locally (RTX 5070, 180 Hz):** the installed service reported 179.8–180.1 FPS for the same presenter, which counted 179.7 itself.
+* **Fixed after that local test:** at a 1 s refresh the service missed most readings, because ETW delivered events 1–2 s late. The helper now flushes the session every 200 ms. The fix is verified in CI but not yet installed on the developer PC.
+* **Windows limitations:** FPS needs the helper service, which needs admin rights once at install. It has not been compared with PresentMon in a real game.
 * **Linux:** not provided. Every per-game frame-timing source loads a layer into the game (MangoHud) or exists only inside gamescope. Both are excluded by the no-injection rule.
 
 ## 5. Overlay rendering
@@ -157,10 +160,11 @@ of one logical core.
 | Overlay shown, 50 ms | 0.88 % | 48 MB |
 | Overlay over a detected app, 200 ms | 0.26 % | 48 MB |
 | Helper service, idle | 0.00 % | 9 MB |
+| Helper service serving FPS (polled every 1 s / 200 ms) | 0.05 % / 0.10 % | 9.6 MB |
 
 * Startup to IPC ready took 130–150 ms.
 * One avoidable cost was found and fixed: duplicate WDDM GPU queries took 6 % of a core and now take 0.21 %.
-* Not measured: helper CPU while it is serving FPS, and the overlay over a real game.
+* Not measured: the overlay over a real game.
 
 ## 10. Generated artifacts
 
@@ -190,7 +194,7 @@ Built by CI run 39697763172 and downloaded:
   * Real exclusive fullscreen.
   * AMD/Intel GPUs and AMD CPUs.
   * Clicking the tray menus.
-  * Settings pages other than General, and the live preview, checked by hand.
+  * The settings fixes for the Metrics page (arrows, label widths) and the Hardware heading, checked by hand after the fix.
   * Real Linux desktops: KDE, GNOME, Hyprland, the portal, the tray.
   * Linux permission setup.
   * Sleep/resume.
@@ -198,9 +202,7 @@ Built by CI run 39697763172 and downloaded:
 
 ## 12. Remaining necessary work
 
-1. **Update the helper installed on the developer PC** (one UAC prompt). It is the build from before the FPS fix, so FPS shows nothing there yet. After that:
-   * Verify FPS in a real game against PresentMon.
-   * Measure helper CPU while it is serving FPS.
-2. **Hand-check the tray menus and every settings page** (needs someone at the PC).
+1. **Install the current helper on the developer PC** (one UAC prompt), so the 200 ms flush fix runs there. Then compare FPS with PresentMon in a real game.
+2. **Hand-check the tray menus** and the re-fixed settings items (needs someone at the PC).
 3. **Run the Linux build on a real desktop** (KDE and GNOME): tray, portal shortcut, overlay over a fullscreen game, `--setup-permissions`.
 4. **Recommendation:** test on AMD and Intel GPUs before claiming support for them.
