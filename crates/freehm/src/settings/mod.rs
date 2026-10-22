@@ -446,6 +446,17 @@ impl eframe::App for SettingsApp {
     }
 }
 
+/// egui's default fonts, with the bundled monospace font (Hack) as a fallback for normal
+/// text: the proportional font lacks the status and arrow symbols (● ▲ ▼), and egui 0.37
+/// only bundles emoji fonts behind a feature that would add 700 KB.
+fn ui_fonts() -> egui::FontDefinitions {
+    let mut f = egui::FontDefinitions::default();
+    if let Some(p) = f.families.get_mut(&egui::FontFamily::Proportional) {
+        p.insert(1, "Hack".to_owned());
+    }
+    f
+}
+
 pub fn run() -> i32 {
     #[cfg(windows)]
     crate::platform::set_dpi_awareness();
@@ -469,6 +480,7 @@ pub fn run() -> i32 {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_theme(egui::Theme::Dark);
+            cc.egui_ctx.set_fonts(ui_fonts());
             Ok(Box::new(SettingsApp::new(&cc.egui_ctx)))
         }),
     );

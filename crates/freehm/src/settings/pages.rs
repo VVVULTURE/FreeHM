@@ -44,7 +44,7 @@ fn hint(ui: &mut egui::Ui, text: &str) {
 }
 
 fn ok_label(ui: &mut egui::Ui, ok: bool, text: impl Into<String>) {
-    let (sym, col) = if ok { ("✔", GREEN) } else { ("✖", ui.visuals().warn_fg_color) };
+    let (sym, col) = if ok { ("●", GREEN) } else { ("×", ui.visuals().warn_fg_color) };
     ui.horizontal_wrapped(|ui| {
         ui.colored_label(col, sym);
         ui.label(text.into());
@@ -437,12 +437,13 @@ pub fn metrics(app: &mut SettingsApp, ui: &mut egui::Ui) {
             ui.label(e.id.display_name());
             let mut label = e.label.clone().unwrap_or_default();
             let def = if cfg_view.overlay.compact_labels { e.id.compact_label() } else { e.id.default_label() };
-            if ui.add(egui::TextEdit::singleline(&mut label).hint_text(def).desired_width(100.0)).changed() {
+            // add_sized: inside a Grid, desired_width alone collapses to the previous frame's column width.
+            if ui.add_sized([100.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut label).hint_text(def)).changed() {
                 e.label = if label.is_empty() { None } else { Some(label) };
             }
             if grouped {
                 let mut g = e.group.clone().unwrap_or_default();
-                if ui.add(egui::TextEdit::singleline(&mut g).hint_text(e.id.default_group()).desired_width(70.0)).changed() {
+                if ui.add_sized([70.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut g).hint_text(e.id.default_group())).changed() {
                     e.group = if g.is_empty() { None } else { Some(g) };
                 }
             } else {
@@ -454,10 +455,10 @@ pub fn metrics(app: &mut SettingsApp, ui: &mut egui::Ui) {
                 ui.label("");
             }
             ui.horizontal(|ui| {
-                if ui.add_enabled(i > 0, egui::Button::new("⏶").small()).on_hover_text("Move up").clicked() {
+                if ui.add_enabled(i > 0, egui::Button::new("▲").small()).on_hover_text("Move up").clicked() {
                     swap = Some((i, i - 1));
                 }
-                if ui.add_enabled(i + 1 < n, egui::Button::new("⏷").small()).on_hover_text("Move down").clicked() {
+                if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).on_hover_text("Move down").clicked() {
                     swap = Some((i, i + 1));
                 }
             });
@@ -559,7 +560,12 @@ pub fn hardware(app: &mut SettingsApp, ui: &mut egui::Ui) {
     }
     let game: Vec<&Reading> = snap.readings.iter().filter(|r| r.device == DEVICE_GAME).collect();
     if !game.is_empty() {
-        egui::CollapsingHeader::new(egui::RichText::new("Active game").strong()).default_open(true).show(ui, |ui| {
+        // Without a detected game, frame timing follows the foreground application.
+        let title = match app.status.as_ref().and_then(|s| s.game.active.as_ref()) {
+            Some(g) => format!("Active game: {}", g.name),
+            None => "Foreground application (no game detected)".to_string(),
+        };
+        egui::CollapsingHeader::new(egui::RichText::new(title).strong()).id_salt("active-game").default_open(true).show(ui, |ui| {
             for r in game {
                 let (t, ok) = reading_text(r, &app.draft);
                 ok_label(ui, ok, format!("{}: {t}", r.metric.display_name()));
@@ -597,7 +603,7 @@ fn list_editor(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, new: &mut St
     let mut remove = None;
     for (i, item) in list.iter().enumerate() {
         ui.horizontal(|ui| {
-            if ui.small_button("✖").on_hover_text("Remove").clicked() {
+            if ui.small_button("×").on_hover_text("Remove").clicked() {
                 remove = Some(i);
             }
             ui.label(item);
@@ -908,7 +914,7 @@ pub fn startup(app: &mut SettingsApp, ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     let busy = app.actions.busy().is_some();
                     let label = if installed { "Repair helper" } else { "Install helper" };
-                    if ui.add_enabled(!busy, egui::Button::new(format!("🛡 {label}"))).on_hover_text("Asks for administrator approval once").clicked() {
+                    if ui.add_enabled(!busy, egui::Button::new(label)).on_hover_text("Asks for administrator approval once").clicked() {
                         app.actions.spawn("install", &ctx, || actions::helper_command("install"));
                     }
                     if installed && ui.add_enabled(!busy, egui::Button::new("Uninstall helper")).clicked() {
@@ -949,10 +955,10 @@ pub fn startup(app: &mut SettingsApp, ui: &mut egui::Ui) {
     if let Some((name, r)) = &app.actions.last {
         match r {
             Ok(m) => {
-                ui.colored_label(GREEN, format!("✔ {name}: {m}"));
+                ui.colored_label(GREEN, format!("● {name}: {m}"));
             }
             Err(e) => {
-                ui.colored_label(ui.visuals().error_fg_color, format!("✖ {name}: {e}"));
+                ui.colored_label(ui.visuals().error_fg_color, format!("× {name}: {e}"));
             }
         }
     }
