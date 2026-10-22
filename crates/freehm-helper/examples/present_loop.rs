@@ -41,6 +41,8 @@ fn main() -> windows::core::Result<()> {
             Some(hinst.into()),
             None,
         )?;
+        // Like a game being launched: take the foreground so game detection sees it.
+        let _ = SetForegroundWindow(hwnd);
         let desc = DXGI_SWAP_CHAIN_DESC {
             BufferDesc: DXGI_MODE_DESC { Format: DXGI_FORMAT_B8G8R8A8_UNORM, ..Default::default() },
             SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },

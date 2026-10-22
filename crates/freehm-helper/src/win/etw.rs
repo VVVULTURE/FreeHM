@@ -150,6 +150,7 @@ struct Session {
     control: CONTROLTRACE_HANDLE,
     props: Props,
     thread: Option<std::thread::JoinHandle<()>>,
+    last_flush: Instant,
 }
 
 impl Session {
@@ -168,7 +169,7 @@ impl Session {
             }
             check(e, "StartTrace")?;
         }
-        let mut s = Session { control, props, thread: None };
+        let mut s = Session { control, props, thread: None, last_flush: Instant::now() };
         // DXGI/D3D9: Analytic channel keyword + "Events"; DxgKrnl: Base | Present (as PresentMon).
         enable(control, &DXGI, 0x8000_0000_0000_0002, &[0x2A])?;
         if let Err(e) = enable(control, &D3D9, 0x8000_0000_0000_0002, &[1]) {
@@ -209,6 +210,20 @@ impl Session {
         );
         log::info!("frame-timing session started");
         Ok(s)
+    }
+}
+
+impl Session {
+    /// Hand partly filled buffers to the consumer now instead of at the next flush-timer
+    /// tick, so the events of the last request interval arrive before the next request.
+    fn flush(&mut self) {
+        if self.last_flush.elapsed() < Duration::from_millis(100) {
+            return;
+        }
+        self.last_flush = Instant::now();
+        unsafe {
+            let _ = ControlTraceW(self.control, PCWSTR::null(), self.props.ptr(), EVENT_TRACE_CONTROL_FLUSH);
+        }
     }
 }
 
@@ -255,6 +270,9 @@ impl FrameCollector {
                     return FrameReport { available: false, reason: Some(e), processes: Vec::new() };
                 }
             }
+        }
+        if let Some(s) = self.session.as_mut() {
+            s.flush();
         }
         let processes = self.tracker.lock().map(|mut t| t.snapshot(now_ns())).unwrap_or_default();
         FrameReport { available: true, reason: None, processes }

@@ -250,7 +250,7 @@ impl Provider for HelperProvider {
                                 out.push(Sample::value(DEVICE_GAME, MetricId::Fps, p.stats.fps));
                                 out.push(Sample::value(DEVICE_GAME, MetricId::FrameTime, p.stats.frametime_ms));
                             }
-                            None => push_na(out, "the game has not presented any frames in the last second"),
+                            None => push_na(out, "the game has not presented any frames in the last two seconds"),
                         }
                     }
                     Some(fr) => push_na(out, fr.reason.as_deref().unwrap_or("frame statistics unavailable")),

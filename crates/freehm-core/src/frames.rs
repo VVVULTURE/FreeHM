@@ -19,11 +19,13 @@ use std::collections::{HashMap, VecDeque};
 
 pub const FPS_WINDOW_NS: u64 = 1_000_000_000;
 pub const FRAMETIME_WINDOW_NS: u64 = 250_000_000;
-/// Longest expected delay between a present and its event reaching the helper (the ETW
-/// session's one-second flush timer).
-pub const DELIVERY_LAG_NS: u64 = 1_000_000_000;
-/// Presents older than this are discarded.
-const KEEP_NS: u64 = 2_000_000_000;
+/// Longest expected delay between a present and its event reaching the helper. The helper
+/// flushes its ETW session on every request and the session's flush timer is one second,
+/// so delivery is normally well under a second; the margin keeps FPS from flickering to
+/// N/A when a flush is late.
+pub const DELIVERY_LAG_NS: u64 = 2_000_000_000;
+/// Presents older than this are discarded (FPS window + delivery lag + margin).
+const KEEP_NS: u64 = 4_000_000_000;
 /// A process with no presents for this long is forgotten.
 const FORGET_NS: u64 = 10_000_000_000;
 const MAX_PER_RING: usize = 8192;
@@ -216,6 +218,11 @@ mod tests {
         let s = compute(&r, last + 600 * MS).unwrap();
         assert!((s.fps - 120.0).abs() < 0.5, "{}", s.fps);
         assert_eq!(s.last_present_age_ms, 600);
+        // The tracker keeps enough history for a late delivery near the limit.
+        let mut t = PresentTracker::default();
+        r.iter().for_each(|&ts| t.record(9, PresentSource::Dxgi, ts));
+        let late = t.snapshot(last + 1_800 * MS);
+        assert!((late[0].stats.fps - 120.0).abs() < 0.5);
         // Past the delivery lag the process has stopped presenting.
         assert!(compute(&r, last + DELIVERY_LAG_NS + MS).is_none());
     }
