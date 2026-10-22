@@ -145,7 +145,7 @@ if ($Helper) {
     & sc.exe qprivs FreeHMHelper | Tee-Object "$Out\helper-privileges.txt"
     # A real D3D11 swap chain (WARP on runners without a GPU) for the frame-timing checks.
     $pl = Join-Path (Split-Path $hx) "examples\present_loop.exe"
-    $presenter = if (Test-Path $pl) { Start-Process $pl -ArgumentList "70" -PassThru -RedirectStandardOutput "$Out\present-loop.txt" } else { $null }
+    $presenter = if (Test-Path $pl) { Start-Process $pl -ArgumentList "100" -PassThru -RedirectStandardOutput "$Out\present-loop.txt" } else { $null }
     Start-Sleep -Seconds 2
     $self = & $hx selftest 2>&1 | Tee-Object "$Out\helper-selftest.txt" | Out-String
     if ($presenter) {
@@ -185,6 +185,23 @@ if ($Helper) {
         # The flush thread runs every 200 ms; 800 ms leaves room for a slow runner.
         if ($maxAge -gt 800) { Fail "helper service at a 1 s request interval: newest present was up to $maxAge ms old (events delivered late)" }
         Pass "helper service at a 1 s request interval: presenter in $hits/10 answers, newest present at most $([math]::Round($maxAge)) ms old"
+
+        # With no requests the helper stops its ETW session after 10 s; the next request
+        # must start a working one again (the session and its flush thread are recreated).
+        Start-Sleep -Seconds 14
+        $stops = @(Select-String -Path "$env:ProgramData\FreeHM\helper.log" -Pattern "frame-timing session stopped").Count
+        if ($stops -lt 1) { Fail "the helper did not stop its idle frame-timing session within 14 s" }
+        $pipe = HelperConnect; $seen = $false
+        for ($i = 0; $i -lt 10 -and -not $seen; $i++) {
+            Start-Sleep -Milliseconds 500
+            $seen = [bool]((HelperAsk $pipe).frames.processes | Where-Object pid -eq $presenter.Id)
+        }
+        $pipe.Dispose()
+        if (-not $seen) {
+            Copy-Item "$env:ProgramData\FreeHM\helper.log" "$Out\helper.log" -ErrorAction SilentlyContinue
+            Fail "after an idle stop, the restarted frame-timing session did not see the presenter within 5 s"
+        }
+        Pass "helper restarts its frame-timing session after an idle stop and sees the presenter again"
 
         # Whole path: app -> helper service (named pipe) -> ETW -> overlay readings.
         $cfg = Join-Path ([IO.Path]::GetTempPath()) ("freehm-ci-fps-" + [guid]::NewGuid())
