@@ -81,7 +81,7 @@ The AMD/Intel GPU paths and AMD CPU paths have never run on such hardware.
   * The full app → helper → overlay path reported 57–62 FPS, Fresh, for the detected test "game".
   * The service, asked once a second, includes the presenter in every answer, with the newest present at most 242 ms old.
 * **Verified locally (RTX 5070, 180 Hz):** the installed service reported 179.8–180.1 FPS for the same presenter, which counted 179.7 itself.
-* **Fixed after that local test:** at a 1 s refresh the service missed most readings, because ETW delivered events 1–2 s late. The helper now flushes the session every 200 ms. The fix is verified in CI but not yet installed on the developer PC.
+* **Fixed after that local test:** at a 1 s refresh the service missed most readings, because ETW delivered events 1–2 s late. The helper now flushes the session every 200 ms. This is verified in CI and on the developer PC: at a 1 s refresh, 24 of 25 answers had FPS (the first request starts frame counting) at 179.89 vs. 180.0 FPS.
 * **Windows limitations:** FPS needs the helper service, which needs admin rights once at install. It has not been compared with PresentMon in a real game.
 * **Linux:** not provided. Every per-game frame-timing source loads a layer into the game (MangoHud) or exists only inside gamescope. Both are excluded by the no-injection rule.
 
@@ -202,7 +202,7 @@ Built by CI run 39697763172 and downloaded:
 
 ## 12. Remaining necessary work
 
-1. **Install the current helper on the developer PC** (one UAC prompt), so the 200 ms flush fix runs there. Then compare FPS with PresentMon in a real game.
+1. **Compare FPS with PresentMon in a real game.** This needs a standalone PresentMon release, because NVIDIA FrameView's copy exits without output.
 2. **Hand-check the tray menus** and the re-fixed settings items (needs someone at the PC).
 3. **Run the Linux build on a real desktop** (KDE and GNOME): tray, portal shortcut, overlay over a fullscreen game, `--setup-permissions`.
 4. **Recommendation:** test on AMD and Intel GPUs before claiming support for them.

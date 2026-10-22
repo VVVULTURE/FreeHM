@@ -143,8 +143,12 @@ every 200 ms.
 * CI checks this directly: the service is asked once a second for 12 s, and every answer
   must include the presenter, with the newest present under 800 ms old. In run
   39860420511 the presenter was in 10 of 10 answers, at most 242 ms old.
-* The fixed helper is **not yet installed** on the developer PC; that needs one more admin
-  approval.
+* Installed on the developer PC on 2026-10-22 and rechecked with the 180 Hz presenter:
+  * Polled every 1 s, 24 of 25 answers had FPS; the only miss was the first request, before frame counting had started.
+  * Polled every 200 ms, all 125 answers had FPS.
+  * Readings averaged 179.89 FPS; the presenter counted 180.0 itself.
+  * The newest present was 340 ms old on average (at most 568 ms).
+  * Helper CPU stayed at or below 0.06 % of a core.
 
 One CI run (on `e257fd2`) failed the app-level FPS check once. The service's own check had
 passed seconds earlier, and the next run passed. The cause is unknown. CI now saves the
@@ -153,7 +157,8 @@ timing recovers after the helper's 10 s idle stop. That check, and everything el
 in run 39861489268 (app 54.1 FPS).
 
 Not yet compared against PresentMon in a real game. The PresentMon bundled with NVIDIA FrameView
-on this PC produced no output in the one attempt, and a second admin approval timed out.
+on this PC exits at once with code 1 and no output, both with `--process_id` and with
+`--process_name`. A standalone PresentMon release would be needed.
 
 ## Performance
 
