@@ -27,7 +27,7 @@ and stale ones, so the whole pipeline can be exercised without real sensors.
 
 ## End-to-end tests
 
-### Windows (`tools/ci/windows-smoke-test.ps1`): CI and local, all pass
+### Windows (`tools/ci/windows-smoke-test.ps1`): all pass in CI; the first part also passed locally
 
 The script starts the real application (with the mock provider) and checks it from outside.
 
@@ -35,7 +35,15 @@ The script starts the real application (with the mock provider) and checks it fr
 * The overlay never becomes the foreground window.
 * Click-through: `WindowFromPoint` over the overlay returns the window underneath.
 * Ctrl+Shift+O (RegisterHotKey) hides and shows it, driven by synthetic key presses.
+* Settings applied through the settings window's IPC request (`--apply-config`):
+  * A new shortcut (Ctrl+Shift+Alt+K) works at once, and the old one is released.
+  * "Start with Windows" creates the per-user `Run` entry, and turning it off removes it again.
+  * An out-of-range value is rejected and nothing changes.
 * `--quit` exits and leaves no window behind.
+* After a restart, the changed settings are all still there: shortcut, interval, position,
+  font, metric selection, manual game list and startup.
+
+  *The settings and startup checks were added after the local run, so they have passed only in CI.*
 * With `-Helper` (elevated):
   * The helper service installs as LocalSystem.
   * Its required privileges are restricted to SeChangeNotify and SeCreateGlobal.
@@ -48,13 +56,16 @@ The CI job also builds the Inno Setup installer and checks it:
 2. Checks the installed files and licence texts.
 3. Uninstalls it silently and confirms that the service and files are gone.
 
-### Linux (`tools/ci/linux-overlay-test.sh`): CI, all 11 checks pass
+### Linux (`tools/ci/linux-overlay-test.sh`): CI, all 17 checks pass
 
 * **X11 (Xvfb):**
   * The overlay window is mapped and override-redirect.
   * Click-through: the window under the pointer is not the overlay, because its input shape is empty.
   * The Ctrl+Shift+O key grab toggles it.
   * A second program holding the same grab is reported as a conflict.
+  * The same settings checks as on Windows pass: the shortcut changes at runtime, the XDG
+    autostart entry is written and removed, invalid values are rejected, and settings
+    survive a restart.
   * It quits cleanly.
 * **Wayland (headless sway):**
   * The layer-shell backend is selected and outputs are reported.
@@ -83,17 +94,20 @@ not be reproduced in the next 12 frames. Its cause is unknown.
 
 Checked in CI with `present_loop` (`crates/freehm-helper/examples/present_loop.rs`), a
 minimal "game". It is a window that presents through a Direct3D 11 flip-model swap chain
-with vsync. On the CI runner (60 Hz virtual display) the results were:
+with vsync. The CI runner has a 60 Hz virtual display and no GPU, so frame pacing is uneven.
 
-| Path | Result |
-|---|---|
-| `freehm-helper selftest`: ETW session → present tracker | 587 present events in 4 s (DXGI 291, DxgKrnl 296); presenter at **61.2 FPS / 16.90 ms** |
-| App → helper service (named pipe) → overlay readings, with `present_loop.exe` detected as the game | **FPS 62.1, frame time 15.81 ms, Fresh** |
+| CI run | Path | Result |
+|---|---|---|
+| 39693863255 | `freehm-helper selftest` (ETW session → present tracker) | 587 present events in 4 s; presenter at **61.2 FPS / 16.90 ms** |
+| 39693863255 | App → helper service (named pipe) → overlay readings, with `present_loop.exe` detected as the game | **FPS 62.1, frame time 15.81 ms, Fresh** |
+| 39696184621 | selftest, compared with the presenter's own count | helper 61.2 FPS; presenter counted 2441 frames in 40 s = **61.0 FPS** |
+| 39697763172 | selftest / app | 49.4 FPS / **57.3 FPS, 18.0 ms**, overlay "shown: game detected" |
 
-Both agree with the expected ~60 FPS at vsync. The newest event reached the helper about
-0.5 s after it was presented, because ETW delivers real-time events in buffers. The
-statistics therefore use the last second of *received* presents and allow up to 1 s of
-delivery delay (unit-tested).
+Without a flush, events reached the helper up to 0.9 s after the present, because ETW hands
+real-time events over in buffers. The helper now flushes its session on each request
+(at most every 100 ms), and the newest event is then 24–46 ms old. The statistics use the
+last second of *received* presents and allow up to 2 s of delivery delay before reporting
+that the game stopped presenting (unit-tested).
 
 History: before 2026-10-21 the helper produced no FPS at all. Its counters showed present
 events arriving and being recorded, yet none fell inside the statistics window. The

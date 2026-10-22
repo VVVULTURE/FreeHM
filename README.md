@@ -176,6 +176,7 @@ cargo build --release --workspace     # target/release/freehm(.exe), freehm-help
 * [docs/SECURITY.md](docs/SECURITY.md): permission model, helper service, anti-cheat design
 * [docs/TESTING.md](docs/TESTING.md): test matrix, results, performance measurements,
   untested areas
+* [docs/REPORT.md](docs/REPORT.md): engineering report: what was built, how, what is verified
 
 ## License
 
