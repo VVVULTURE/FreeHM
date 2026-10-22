@@ -17,7 +17,7 @@ no game, virtual displays). "Local" means the developer PC:
 
 | Crate | Tests | Covers |
 |---|---|---|
-| freehm-core | 84 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, late or out-of-order events, bounded memory), game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
+| freehm-core | 85 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, late or out-of-order events, bounded memory), game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
 | freehm | 10 on Windows, 19 on Linux (adds `/proc` probe and permission tests) | path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
 | freehm-helper | 4 | protocol, embedded PawnIO module hashes, request validation |
 

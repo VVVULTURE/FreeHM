@@ -131,7 +131,7 @@ Verified:
 ## 8. Tests
 
 * **Unit tests (`cargo test --workspace`), all pass:**
-  * core 84
+  * core 85
   * app 10 on Windows, 19 on Linux
   * helper 4
 * **Windows end-to-end, all pass in CI:**
