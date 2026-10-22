@@ -114,6 +114,8 @@ pub struct App {
     visible: bool,
     vis_reason: String,
     snapshot: Snapshot,
+    /// When `snapshot` arrived; status replies age it once polling has stopped.
+    snapshot_at: Instant,
     game: GameUpdate,
     telemetry: TelemetryThread,
     last_plan: Option<(Duration, PollRequest)>,
@@ -151,6 +153,7 @@ impl App {
             visible: false,
             vis_reason: String::new(),
             snapshot: Snapshot::default(),
+            snapshot_at: Instant::now(),
             game: GameUpdate::default(),
             telemetry,
             last_plan: None,
@@ -183,6 +186,7 @@ impl App {
         match ev {
             AppEvent::Snapshot(s) => {
                 self.snapshot = s;
+                self.snapshot_at = Instant::now();
                 self.redraw(p, false);
             }
             AppEvent::Game(g) => {
@@ -481,6 +485,18 @@ impl App {
         self.last_drawn = Some((rows, style, place));
     }
 
+    /// The last snapshot, aged if it is older than the poll interval allows: while the
+    /// overlay is hidden nothing is read, and the values must not be reported as current.
+    fn status_snapshot(&self) -> Snapshot {
+        let interval = Duration::from_millis(self.cfg.general.refresh_interval_ms as u64);
+        let elapsed = self.snapshot_at.elapsed();
+        if elapsed <= (interval * 3).max(Duration::from_secs(1)) {
+            return self.snapshot.clone();
+        }
+        let idle = self.last_plan.as_ref().is_none_or(|(_, req)| req.metrics.is_empty());
+        self.snapshot.aged(elapsed, if idle { "not being read while the overlay is hidden" } else { "no new readings from the sensors" })
+    }
+
     fn status(&mut self, p: &mut dyn Platform) -> Status {
         let mut notes = self.notes.clone();
         if let Some(n) = &self.font_note {
@@ -492,7 +508,7 @@ impl App {
             config: self.cfg.clone(),
             config_path: self.cfg_path.display().to_string(),
             log_path: crate::paths::log_file().display().to_string(),
-            snapshot: self.snapshot.clone(),
+            snapshot: self.status_snapshot(),
             overlay: OverlayStatus {
                 visible: self.visible,
                 reason: self.vis_reason.clone(),

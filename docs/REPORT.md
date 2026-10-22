@@ -82,7 +82,8 @@ The AMD/Intel GPU paths and AMD CPU paths have never run on such hardware.
   * The service, asked once a second, includes the presenter in every answer, with the newest present at most 242 ms old.
 * **Verified locally (RTX 5070, 180 Hz):** the installed service reported 179.8–180.1 FPS for the same presenter, which counted 179.7 itself.
 * **Fixed after that local test:** at a 1 s refresh the service missed most readings, because ETW delivered events 1–2 s late. The helper now flushes the session every 200 ms. This is verified in CI and on the developer PC: at a 1 s refresh, 24 of 25 answers had FPS (the first request starts frame counting) at 179.89 vs. 180.0 FPS.
-* **Windows limitations:** FPS needs the helper service, which needs admin rights once at install. It has not been compared with PresentMon in a real game.
+* **Verified against PresentMon in a real game:** Geometry Dash at its 120 FPS cap. PresentMon measured 119.45 FPS / 8.372 ms over 40 s; FreeHM measured 119.44 FPS / 8.365 ms.
+* **Windows limitations:** FPS needs the helper service, which needs admin rights once at install. Only one game, and only DXGI, has been checked this way.
 * **Linux:** not provided. Every per-game frame-timing source loads a layer into the game (MangoHud) or exists only inside gamescope. Both are excluded by the no-injection rule.
 
 ## 5. Overlay rendering
@@ -159,12 +160,12 @@ of one logical core.
 | Overlay shown, 1000 ms | < 0.05 % | 48 MB |
 | Overlay shown, 50 ms | 0.88 % | 48 MB |
 | Overlay over a detected app, 200 ms | 0.26 % | 48 MB |
+| Overlay over a real game (Geometry Dash, 50 ms) | 0.39 % | |
 | Helper service, idle | 0.00 % | 9 MB |
 | Helper service serving FPS (polled every 1 s / 200 ms) | 0.05 % / 0.10 % | 9.6 MB |
 
 * Startup to IPC ready took 130–150 ms.
 * One avoidable cost was found and fixed: duplicate WDDM GPU queries took 6 % of a core and now take 0.21 %.
-* Not measured: the overlay over a real game.
 
 ## 10. Generated artifacts
 
@@ -190,7 +191,7 @@ Built by CI run 39697763172 and downloaded:
   * The GNOME tray needs the AppIndicator extension.
   * Anti-cheat compatibility is unknown.
 * **Not tested:**
-  * Real games, and comparison with PresentMon or the NVIDIA overlay.
+  * Games beyond one DXGI title (Geometry Dash); D3D9, OpenGL and Vulkan games.
   * Real exclusive fullscreen.
   * AMD/Intel GPUs and AMD CPUs.
   * The tray menu on a real Linux desktop. On Windows every item was checked, with the menu opened by its callback message (see TESTING.md).
@@ -201,6 +202,6 @@ Built by CI run 39697763172 and downloaded:
 
 ## 12. Remaining necessary work
 
-1. **Compare FPS with PresentMon in a real game.** This needs a standalone PresentMon release, because NVIDIA FrameView's copy exits without output.
+1. **Compare more games with PresentMon**: D3D9, OpenGL and Vulkan titles, plus exclusive fullscreen.
 2. **Run the Linux build on a real desktop** (KDE and GNOME): tray, portal shortcut, overlay over a fullscreen game, `--setup-permissions`.
 3. **Recommendation:** test on AMD and Intel GPUs before claiming support for them.

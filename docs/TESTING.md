@@ -162,9 +162,22 @@ helper log, reports what the service sees when the app check fails, and tests th
 timing recovers after the helper's 10 s idle stop. That check, and everything else, passed
 in run 39861489268 (app 54.1 FPS).
 
-Not yet compared against PresentMon in a real game. The PresentMon bundled with NVIDIA FrameView
-on this PC exits at once with code 1 and no output, both with `--process_id` and with
-`--process_name`. A standalone PresentMon release would be needed.
+**Real game compared with PresentMon (2026-10-22).** The game was Geometry Dash, fullscreen on the 180 Hz monitor.
+It presented at sync interval 0 with tearing allowed, and its own limiter held it at 120 FPS.
+FreeHM detected it automatically ("installed in Steam library"). Over the same 40 s:
+
+| Source | FPS | Frame time |
+|---|---|---|
+| PresentMon 2.6.0 (Intel-signed release), 4778 presents | 119.45 (per second: 114–121) | 8.372 ms mean |
+| FreeHM helper service, polled every 200 ms (200/200 answers) | 119.44 mean (112.9–120.2) | 8.365 ms mean |
+| FreeHM overlay readings, sampled every 1 s | 119.98 mean, all Fresh | |
+
+The newest present was 368 ms old on average (at most 603 ms). FreeHM used 0.39 % of a core
+with the overlay over the game at a 50 ms refresh interval. The overlay hid whenever the
+user switched away from the game, as designed.
+
+The NVIDIA FrameView copy of PresentMon on this PC exits at once with code 1 and no
+output, so the standalone release was used.
 
 ## Performance
 

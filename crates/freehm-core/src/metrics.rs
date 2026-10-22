@@ -298,6 +298,25 @@ pub struct ProviderStatus {
 }
 
 impl Snapshot {
+    /// This snapshot as seen `elapsed` after it was published: ages grow, and values that
+    /// were fresh or cached become stale with `reason`. Used when nothing is being polled
+    /// (overlay hidden), so a reported value never claims to be current when it is not.
+    pub fn aged(&self, elapsed: std::time::Duration, reason: &str) -> Snapshot {
+        let mut s = self.clone();
+        let extra = elapsed.as_millis() as u64;
+        for r in &mut s.readings {
+            if r.value.is_none() {
+                continue;
+            }
+            r.age_ms = Some(r.age_ms.unwrap_or(0) + extra);
+            if matches!(r.freshness, Freshness::Fresh | Freshness::Cached) {
+                r.freshness = Freshness::Stale;
+                r.reason = Some(reason.to_string());
+            }
+        }
+        s
+    }
+
     pub fn get(&self, device: &str, metric: MetricId) -> Option<&Reading> {
         self.readings.iter().find(|r| r.metric == metric && r.device == device)
     }
@@ -331,6 +350,29 @@ pub const DEVICE_GAME: &str = "game:active";
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn aged_snapshot_marks_values_stale_and_keeps_unavailable() {
+        let fresh = Reading {
+            metric: MetricId::Fps,
+            device: DEVICE_GAME.into(),
+            value: Some(120.0),
+            unit: MetricId::Fps.unit(),
+            freshness: Freshness::Fresh,
+            age_ms: Some(50),
+            reason: None,
+            source: "test".into(),
+        };
+        let na = Reading::unavailable(MetricId::CpuTemp, "cpu:0", "test", "no sensor".to_string());
+        let snap = Snapshot { readings: vec![fresh, na.clone()], ..Default::default() };
+        let aged = snap.aged(std::time::Duration::from_secs(5), "not read while the overlay is hidden");
+        let r = aged.get(DEVICE_GAME, MetricId::Fps).unwrap();
+        assert_eq!(r.freshness, Freshness::Stale);
+        assert_eq!(r.age_ms, Some(5050));
+        assert_eq!(r.value, Some(120.0));
+        assert_eq!(r.reason.as_deref(), Some("not read while the overlay is hidden"));
+        assert_eq!(aged.get("cpu:0", MetricId::CpuTemp), Some(&na));
+    }
+
     use super::*;
 
     fn dev(id: &str, kind: DeviceKind, integrated: bool) -> DeviceInfo {
