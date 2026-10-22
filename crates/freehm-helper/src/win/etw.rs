@@ -14,6 +14,10 @@ use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
 use windows::core::{GUID, PCWSTR, PWSTR};
 
 pub const IDLE_STOP: Duration = Duration::from_secs(10);
+/// How often a running session's buffers are flushed to the consumer. Buffers are per CPU
+/// and fill slowly, so without this, events reach the tracker 1–2 s late whatever the
+/// request rate (measured on a 20-thread CPU), which breaks a 1000 ms refresh.
+const FLUSH_EVERY: Duration = Duration::from_millis(200);
 const SESSION_NAME: &str = "FreeHM-Frames";
 
 /// Microsoft-Windows-DXGI — Present_Start (0x2A).
@@ -108,8 +112,9 @@ impl Props {
             (*ep).Wnode.ClientContext = 1; // QPC resolution (delivered converted to FILETIME)
             (*ep).LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
             (*ep).LoggerNameOffset = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
-            // Small buffers: a real-time consumer only sees a buffer once it is full or the
-            // flush timer fires, so small ones keep the delivery delay well under a second.
+            // Small buffers: a real-time consumer only sees a buffer once it is full or
+            // flushed. The flush thread (see `FLUSH_EVERY`) keeps the delay short; the
+            // one-second flush timer is the fallback.
             (*ep).BufferSize = 8; // KB
             (*ep).MinimumBuffers = 4;
             (*ep).MaximumBuffers = 64;
@@ -150,7 +155,8 @@ struct Session {
     control: CONTROLTRACE_HANDLE,
     props: Props,
     thread: Option<std::thread::JoinHandle<()>>,
-    last_flush: Instant,
+    /// Dropping the sender stops the flush thread.
+    flusher: Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>,
 }
 
 impl Session {
@@ -169,7 +175,7 @@ impl Session {
             }
             check(e, "StartTrace")?;
         }
-        let mut s = Session { control, props, thread: None, last_flush: Instant::now() };
+        let mut s = Session { control, props, thread: None, flusher: None };
         // DXGI/D3D9: Analytic channel keyword + "Events"; DxgKrnl: Base | Present (as PresentMon).
         enable(control, &DXGI, 0x8000_0000_0000_0002, &[0x2A])?;
         if let Err(e) = enable(control, &D3D9, 0x8000_0000_0000_0002, &[1]) {
@@ -208,27 +214,33 @@ impl Session {
                 })
                 .map_err(|e| e.to_string())?,
         );
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let control_val = control.Value;
+        s.flusher = Some((
+            stop_tx,
+            std::thread::Builder::new()
+                .name("etw-flush".into())
+                .spawn(move || {
+                    let mut p = Props::new();
+                    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(FLUSH_EVERY) {
+                        unsafe {
+                            let _ = ControlTraceW(CONTROLTRACE_HANDLE { Value: control_val }, PCWSTR::null(), p.ptr(), EVENT_TRACE_CONTROL_FLUSH);
+                        }
+                    }
+                })
+                .map_err(|e| e.to_string())?,
+        ));
         log::info!("frame-timing session started");
         Ok(s)
     }
 }
 
-impl Session {
-    /// Hand partly filled buffers to the consumer now instead of at the next flush-timer
-    /// tick, so the events of the last request interval arrive before the next request.
-    fn flush(&mut self) {
-        if self.last_flush.elapsed() < Duration::from_millis(100) {
-            return;
-        }
-        self.last_flush = Instant::now();
-        unsafe {
-            let _ = ControlTraceW(self.control, PCWSTR::null(), self.props.ptr(), EVENT_TRACE_CONTROL_FLUSH);
-        }
-    }
-}
-
 impl Drop for Session {
     fn drop(&mut self) {
+        if let Some((stop, t)) = self.flusher.take() {
+            drop(stop);
+            let _ = t.join();
+        }
         unsafe {
             let _ = ControlTraceW(self.control, PCWSTR::null(), self.props.ptr(), EVENT_TRACE_CONTROL_STOP);
         }
@@ -270,9 +282,6 @@ impl FrameCollector {
                     return FrameReport { available: false, reason: Some(e), processes: Vec::new() };
                 }
             }
-        }
-        if let Some(s) = self.session.as_mut() {
-            s.flush();
         }
         let processes = self.tracker.lock().map(|mut t| t.snapshot(now_ns())).unwrap_or_default();
         FrameReport { available: true, reason: None, processes }

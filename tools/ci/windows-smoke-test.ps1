@@ -145,7 +145,7 @@ if ($Helper) {
     & sc.exe qprivs FreeHMHelper | Tee-Object "$Out\helper-privileges.txt"
     # A real D3D11 swap chain (WARP on runners without a GPU) for the frame-timing checks.
     $pl = Join-Path (Split-Path $hx) "examples\present_loop.exe"
-    $presenter = if (Test-Path $pl) { Start-Process $pl -ArgumentList "40" -PassThru -RedirectStandardOutput "$Out\present-loop.txt" } else { $null }
+    $presenter = if (Test-Path $pl) { Start-Process $pl -ArgumentList "70" -PassThru -RedirectStandardOutput "$Out\present-loop.txt" } else { $null }
     Start-Sleep -Seconds 2
     $self = & $hx selftest 2>&1 | Tee-Object "$Out\helper-selftest.txt" | Out-String
     if ($presenter) {
@@ -153,6 +153,36 @@ if ($Helper) {
         if (-not $m.Success) { Fail "helper ETW did not see the test presenter (pid $($presenter.Id)):`n$self" }
         if ([double]$m.Groups[1].Value -lt 10) { Fail "presenter measured at only $($m.Groups[1].Value) fps" }
         Pass "helper ETW frame timing sees the D3D11 presenter at $($m.Groups[1].Value) fps"
+
+        # The service itself, asked once a second (a 1000 ms refresh): every answer after
+        # warm-up must include the presenter. ETW buffers used to reach the helper 1-2 s
+        # late unless requests were frequent, so slow refresh rates lost the FPS reading.
+        # Ask only for the rights the pipe's ACL grants (InOut would add write-attributes).
+        $rights = [IO.Pipes.PipeAccessRights]::ReadData -bor [IO.Pipes.PipeAccessRights]::WriteData -bor [IO.Pipes.PipeAccessRights]::ReadAttributes -bor [IO.Pipes.PipeAccessRights]::Synchronize
+        $pipe = New-Object IO.Pipes.NamedPipeClientStream(".", "FreeHM.Helper.v1", $rights, [IO.Pipes.PipeOptions]::None, [Security.Principal.TokenImpersonationLevel]::Identification, [IO.HandleInheritability]::None)
+        $pipe.Connect(5000)
+        $ask = {
+            $body = [Text.Encoding]::UTF8.GetBytes('{"v":1,"cpu":false,"frames":true}')
+            $pipe.Write([BitConverter]::GetBytes([uint32]$body.Length), 0, 4); $pipe.Write($body, 0, $body.Length); $pipe.Flush()
+            $read = { param($b, $len) $n = 0; while ($n -lt $len) { $k = $pipe.Read($b, $n, $len - $n); if ($k -le 0) { throw "helper pipe closed" }; $n += $k } }
+            $hdr = New-Object byte[] 4; & $read $hdr 4
+            $len = [BitConverter]::ToUInt32($hdr, 0); $buf = New-Object byte[] $len; $n = 0
+            while ($n -lt $len) { $n += $pipe.Read($buf, $n, $len - $n) }
+            [Text.Encoding]::UTF8.GetString($buf) | ConvertFrom-Json
+        }
+        $hits = 0; $ages = @()
+        for ($i = 0; $i -lt 12; $i++) {
+            $r = & $ask
+            $mine = $r.frames.processes | Where-Object pid -eq $presenter.Id
+            if ($i -ge 2 -and $mine) { $hits++; $ages += $mine.stats.last_present_age_ms }
+            Start-Sleep -Seconds 1
+        }
+        $pipe.Dispose()
+        $maxAge = ($ages | Measure-Object -Maximum).Maximum
+        if ($hits -lt 10) { Fail "helper service at a 1 s request interval reported the presenter in only $hits of 10 answers" }
+        # The flush thread runs every 200 ms; 800 ms leaves room for a slow runner.
+        if ($maxAge -gt 800) { Fail "helper service at a 1 s request interval: newest present was up to $maxAge ms old (events delivered late)" }
+        Pass "helper service at a 1 s request interval: presenter in $hits/10 answers, newest present at most $([math]::Round($maxAge)) ms old"
 
         # Whole path: app -> helper service (named pipe) -> ETW -> overlay readings.
         $cfg = Join-Path ([IO.Path]::GetTempPath()) ("freehm-ci-fps-" + [guid]::NewGuid())
