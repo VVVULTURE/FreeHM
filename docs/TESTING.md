@@ -86,7 +86,8 @@ The CI job also builds the Inno Setup installer and checks it:
 | Helper service account/privileges/ACLs on a real install | pass |
 | CPU temperature (28–42 °C) and package power via the helper reach the unprivileged app | pass |
 | NVIDIA GPU usage, temperature and VRAM via NVML, shown in the overlay (GPU clock and power not displayed in that test) | pass |
-| Settings window: all eight pages opened and screenshotted, live preview updating (2026-10-22) | pass, three bugs found and fixed (below) |
+| Settings window: all eight pages opened and screenshotted, live preview updating (2026-10-22) | pass, three bugs found and fixed (below), fixes rechecked on screen |
+| Tray menu (Windows): items and check marks; Open settings; Show overlay on/off; game detection off/on; Start with Windows off/on (Run entry removed and restored); Quit; left-click on the icon opens settings | pass (see note) |
 | FPS on the real GPU (RTX 5070, 180 Hz) through the installed helper service | pass: 179.8–180.1 FPS vs. the presenter's own 179.7–180.1 |
 | Helper service CPU while serving FPS | 0.05 % of a core polled every 1 s, 0.10 % every 200 ms; 9.6 MB |
 | Startup to IPC ready | 130–150 ms |
@@ -94,11 +95,16 @@ The CI job also builds the Inno Setup installer and checks it:
 Bugs found by the settings hand-check (fixed in `a7af198`):
 * Status dots, the metric reorder arrows and the icon on "Repair helper" were drawn as
   empty boxes, because egui 0.37 bundles its symbol fonts only behind an optional feature.
-  The dot and the "Repair helper" button were rechecked after the fix. The arrows were not,
-  because the user had come back to the PC by then.
+  All three fixes were rechecked on screen after the change.
 * The label fields on the Metrics page were cut off ("Fr…").
 * With no game detected, the Hardware page labelled the foreground application's frame
   rate as "Active game".
+
+Note on the tray check: FreeHM's icon sits in the taskbar's overflow area, which could not
+be opened by script. The menu was therefore opened by posting the exact callback message the
+shell sends for a right-click (`WM_CONTEXTMENU` and, for a left-click, `NIN_SELECT`) to
+FreeHM's window. The menu items were then clicked with the real mouse. The shell's own
+delivery of those clicks was not exercised.
 
 One transient rendering glitch (a green block in one screenshot) was seen once and could
 not be reproduced in the next 12 frames. Its cause is unknown.
@@ -195,7 +201,7 @@ These have **not** been verified. Treat them as unknown:
 * **Real games**: no real game has been run with FreeHM yet, so there is no FPS comparison against PresentMon or the NVIDIA overlay.
 * **Exclusive fullscreen**: warning detection is unit-tested, but has not been tried with a real exclusive-fullscreen game.
 * **AMD and Intel GPUs**: the Windows WDDM path and the Linux amdgpu, i915 and xe paths have only run where there is no such GPU. AMD CPUs (PawnIO SMN module, `k10temp`) are untested too.
-* **Tray menus**: clicking the tray menus on Windows and on a real Linux desktop (KDE, GNOME with AppIndicator).
+* **Tray menus on Linux**: on a real desktop (KDE, GNOME with AppIndicator). On Windows the menu was checked as described above.
 * **Real Linux desktops**: the GlobalShortcuts portal on KDE or GNOME 48+, and the overlay on KDE, GNOME, Hyprland and others. CI covers only Xvfb and headless sway.
 * **Linux permission setup**: the RAPL `pkexec` setup has not been run on a real Linux machine.
 * **Sleep/resume**: on both platforms, only the code path exists.

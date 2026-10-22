@@ -193,8 +193,7 @@ Built by CI run 39697763172 and downloaded:
   * Real games, and comparison with PresentMon or the NVIDIA overlay.
   * Real exclusive fullscreen.
   * AMD/Intel GPUs and AMD CPUs.
-  * Clicking the tray menus.
-  * The settings fixes for the Metrics page (arrows, label widths) and the Hardware heading, checked by hand after the fix.
+  * The tray menu on a real Linux desktop. On Windows every item was checked, with the menu opened by its callback message (see TESTING.md).
   * Real Linux desktops: KDE, GNOME, Hyprland, the portal, the tray.
   * Linux permission setup.
   * Sleep/resume.
@@ -203,6 +202,5 @@ Built by CI run 39697763172 and downloaded:
 ## 12. Remaining necessary work
 
 1. **Compare FPS with PresentMon in a real game.** This needs a standalone PresentMon release, because NVIDIA FrameView's copy exits without output.
-2. **Hand-check the tray menus** and the re-fixed settings items (needs someone at the PC).
-3. **Run the Linux build on a real desktop** (KDE and GNOME): tray, portal shortcut, overlay over a fullscreen game, `--setup-permissions`.
-4. **Recommendation:** test on AMD and Intel GPUs before claiming support for them.
+2. **Run the Linux build on a real desktop** (KDE and GNOME): tray, portal shortcut, overlay over a fullscreen game, `--setup-permissions`.
+3. **Recommendation:** test on AMD and Intel GPUs before claiming support for them.
