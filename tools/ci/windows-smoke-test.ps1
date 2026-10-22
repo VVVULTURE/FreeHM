@@ -25,6 +25,7 @@ public static class W {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
@@ -159,6 +160,11 @@ if ($Helper) {
         @{ schema_version = 1; general = @{ start_with_system = $false }; detection = @{ auto_detect = $false; manual_games = @("present_loop.exe") }
            hotkeys = @{ toggle_overlay = "Ctrl+Alt+Shift+F12" }; permissions = @{ first_run_done = $true } } | ConvertTo-Json -Depth 5 | Set-Content "$cfg\config.json" -Encoding utf8
         $env:FREEHM_CONFIG_DIR = $cfg
+        # Game detection follows the foreground window. Windows only lets the process with
+        # the last input move the foreground, so press and release Alt first.
+        $pw = [W]::FindWindow("FreeHM.PresentLoop", "FreeHM present loop")
+        [W]::Chord([byte[]](0x12)); [void][W]::SetForegroundWindow($pw); Start-Sleep -Milliseconds 300
+        if ([W]::GetForegroundWindow() -ne $pw) { Fail "could not bring the test presenter to the foreground" }
         $app2 = Start-Process $exe -ArgumentList "--background" -PassThru
         $fps = $null
         for ($i = 0; $i -lt 30 -and -not $fps; $i++) {
