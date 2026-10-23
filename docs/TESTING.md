@@ -189,18 +189,28 @@ Every value FreeHM shows was compared with independent sources on the developer 
 `tools/verify/accuracy.ps1` repeats the Windows half of this on demand, and CI runs it (and
 `accuracy.py` on Linux) on every change.
 
-**Automated check** (`accuracy.ps1 -Samples 30 -Load`, means over 30 samples, all PASS):
+**Automated check** (`accuracy.ps1 -Samples 30 -Load`, all 18 PASS):
 
-| Value | FreeHM | Reference | Source |
+| Value | FreeHM | Reference | Source and method |
 |---|---|---|---|
-| CPU usage | 16.62 % | 17.16 % | Windows % Processor Utility (Task Manager) |
-| CPU clock | 4231 MHz | 4202 MHz | Windows frequency × performance (Task Manager) |
-| CPU power | 40.08 W | 40.28 W / 40.27 W | Windows Energy Meter / helper MSR RAPL |
-| CPU temperature | 52.37 °C | 51.97 °C | helper raw package sensor |
-| RAM used / total / % | 8826 / 32478 MiB / 27.03 % | identical | GlobalMemoryStatusEx |
-| GPU temperature | 38.0 °C | 38.3 °C | nvidia-smi |
-| GPU usage, clock, power | 0.95 %, 413 MHz, 12.91 W | 0.93 %, 403 MHz, 12.91 W | nvidia-smi |
-| VRAM used / total / % | 769 / 12227 MiB / 6.29 % | identical | nvidia-smi |
+| CPU usage | 4.00 % / 9.73 % | 4.05 % / 9.79 % | Windows % Processor Utility (Task Manager), same 12 s window; idle / one core busy |
+| CPU clock | 3933 / 4408 MHz | 3916 / 4407 MHz | Windows frequency × % Processor Performance, same window |
+| CPU power | 15.45 / 32.43 W | 15.52 / 32.46 W | Windows Energy Meter energy counter (RAPL), same window |
+| CPU power, instant | 15.23 W | 14.98 W | helper MSR RAPL |
+| CPU temperature | 33.37 °C | 32.70 °C | helper raw package sensor |
+| RAM used / total / % | 8047 / 32478 MiB / 24.78 % | 8048 / 32478 MiB / 24.78 % | GlobalMemoryStatusEx |
+| GPU temperature | 37.00 °C | 36.97 °C | nvidia-smi |
+| GPU usage, clock, power | 0.93 %, 369.7 MHz, 12.35 W | 0.87 %, 369.0 MHz, 12.35 W | nvidia-smi |
+| VRAM used / total / % | 865.6 / 12227 MiB / 7.08 % | 866.0 / 12227 MiB / 7.08 % | nvidia-smi |
+
+"Same window": Windows' averaging counters are read at the start and end of a 12 s window,
+and every snapshot FreeHM publishes in that window is collected (by sequence number) and
+averaged. Both sides then cover exactly the same time. Comparing single reads instead
+differs by several % on a busy machine, because FreeHM's newest poll and a counter's
+window never cover the same moments. % Processor Performance averages over busy time, so
+FreeHM's clocks are weighted by each poll's CPU usage for that comparison. Unweighted, idle
+clocks read 3–4 % lower than the long-window value; under steady load the two methods agree
+to 1 MHz.
 
 **Against LibreHardwareMonitor**, whose samples were taken by a separate process up to a
 second apart:
@@ -220,10 +230,14 @@ What was learned about measuring:
   CPU right when one side samples. That alone made FreeHM look 1.3 °C and 1 W "too high".
   The scripts therefore read the CPU only through open pipes and in-process counters, and
   query the GPU in a separate phase.
-* On an idle machine both sides read about 0 % CPU, which proves little. CI therefore runs
-  the check with a steady one-core load (`-Load` / `--load`).
+* On an idle machine both sides read about 0 % CPU, which proves little. CI therefore also
+  runs the CPU comparisons with a steady one-core load (`-Load` / `--load`).
+* `% Processor Utility` exceeds 100 % when cores run above base clock. Task Manager and
+  FreeHM cap at 100 %, so a saturated machine (over 95 %) is reported as skipped, not
+  compared.
 * The CPU temperature tolerance is 3 °C, because two reads milliseconds apart differ by
-  that much under load.
+  that much. Temperature is compared without the artificial load, under which the package
+  sensor swings about 5 °C between reads.
 
 Values without an independent source here: GPU shared memory (FreeHM reads it from the same
 WDDM counters any other tool would use); AMD and Intel GPUs; AMD CPUs; Linux sensors on

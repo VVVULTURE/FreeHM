@@ -55,7 +55,7 @@ class App:
         self.s.sendall(struct.pack("<I", len(body)) + body)
         (n,) = struct.unpack("<I", self._recv(4))
         st = json.loads(self._recv(n))["Status"]
-        out = {}
+        out = {"_seq": st["snapshot"]["seq"]}
         for r in st["snapshot"]["readings"]:
             if r["value"] is not None and r["device"] != "game:active":
                 out.setdefault(r["metric"], r["value"])
@@ -104,6 +104,34 @@ def cpu_temp_file():
     return None
 
 
+def cpu_window(app, suffix, seconds, efile):
+    """CPU usage (and RAPL power when readable) over one long window: /proc/stat and
+    energy_uj at the start and the end, and every snapshot FreeHM publishes in between
+    collected once (by sequence number) and averaged. Both sides cover the same time,
+    including background load and this script's own work."""
+    start, t0 = proc_stat(), time.monotonic()
+    e0 = int(read(efile)) if efile else None
+    seen, vals = set(), {"CpuUsage": [], "CpuPower": []}
+    end = t0 + seconds
+    while time.monotonic() < end:
+        f = app.readings()
+        if f["_seq"] not in seen:
+            seen.add(f["_seq"])
+            for m in vals:
+                if m in f:
+                    vals[m].append(f[m])
+        time.sleep(0.04)
+    busy, total = proc_stat()
+    ref = {}
+    if total > start[1]:
+        ref["CpuUsage"] = 100 * (busy - start[0]) / (total - start[1])
+    if efile:
+        e1 = int(read(efile))
+        if e1 >= e0:
+            ref["CpuPower"] = (e1 - e0) / 1e6 / (time.monotonic() - t0)
+    return [{"f": {m + suffix: v}, "win_" + m + suffix: ref[m]} for m in ref for v in vals[m]]
+
+
 def rapl_file():
     for d in glob.glob("/sys/class/powercap/intel-rapl:*"):
         if (read(f"{d}/name") or "").strip() == "package-0" and read(f"{d}/energy_uj") is not None:
@@ -123,43 +151,27 @@ def main():
     time.sleep(2)
     tfile, efile = cpu_temp_file(), rapl_file()
     rows = []
-    prev_e = (int(read(efile)), time.monotonic()) if efile else None
     # Phase 1: CPU and RAM, in-process reads only.
+    rows += cpu_window(app, "", 12, efile)
     for _ in range(a.samples):
-        # CPU usage over the pause only, when this script is idle; FreeHM's newest poll
-        # window also lies in it. Otherwise the reference includes this script's own work.
-        before = proc_stat()
         time.sleep(0.5)
-        busy, total = proc_stat()
         f = app.readings()
         r = {"f": f}
-        if total > before[1]:
-            r["cpu_usage"] = 100 * (busy - before[0]) / (total - before[1])
         r["cpu_clock"] = cpu_clock()
         if tfile:
             r["cpu_temp"] = int(read(tfile)) / 1000
-        if efile:
-            e, t = int(read(efile)), time.monotonic()
-            if e >= prev_e[0]:
-                r["cpu_power"] = (e - prev_e[0]) / 1e6 / (t - prev_e[1])
-            prev_e = (e, t)
         r["ram_total"], r["ram_used"] = meminfo()
         r["ram_usage"] = 100 * r["ram_used"] / r["ram_total"]
         rows.append(r)
-    # Phase 1b (--load): CPU usage and clock again with one core kept busy.
+    # Phase 1b (--load): CPU usage, power and clock again with one core kept busy.
     if a.load:
         load = subprocess.Popen([sys.executable, "-c", "while True: pass"])
         time.sleep(1)
+        rows += cpu_window(app, "@load", 12, efile)
         for _ in range(a.samples):
-            before = proc_stat()
             time.sleep(0.5)
-            busy, total = proc_stat()
             f = app.readings()
-            r = {"f": {"CpuUsage@load": f.get("CpuUsage"), "CpuClock@load": f.get("CpuClock")}, "cpu_clock_load": cpu_clock()}
-            r["f"] = {k: v for k, v in r["f"].items() if v is not None}
-            if total > before[1]:
-                r["cpu_usage_load"] = 100 * (busy - before[0]) / (total - before[1])
-            rows.append(r)
+            rows.append({"f": {"CpuClock@load": f["CpuClock"]} if "CpuClock" in f else {}, "cpu_clock_load": cpu_clock()})
         load.kill()
     # Phase 2: NVIDIA GPU through nvidia-smi.
     if shutil.which("nvidia-smi"):
@@ -176,14 +188,15 @@ def main():
 
     # metric, reference key, reference name, absolute tolerance, relative tolerance (the larger applies)
     checks = [
-        ("CpuUsage", "cpu_usage", "/proc/stat", 5.0, 0),
+        ("CpuUsage", "win_CpuUsage", "/proc/stat, same 12 s window", 2.0, 0),
+        ("CpuPower", "win_CpuPower", "RAPL energy_uj, same window", 0.5, 0.03),
         ("CpuClock", "cpu_clock", "cpufreq scaling_cur_freq", 0, 0.10),
-        ("CpuUsage@load", "cpu_usage_load", "/proc/stat, one core busy", 5.0, 0),
+        ("CpuUsage@load", "win_CpuUsage@load", "same, one core kept busy", 2.0, 0),
+        ("CpuPower@load", "win_CpuPower@load", "same, one core kept busy", 0.5, 0.03),
         ("CpuClock@load", "cpu_clock_load", "cpufreq scaling_cur_freq, one core busy", 0, 0.10),
         # The package sensor moves within milliseconds and the two reads are a few
         # milliseconds apart; 3 degrees covers that.
         ("CpuTemp", "cpu_temp", "hwmon package sensor", 3.0, 0),
-        ("CpuPower", "cpu_power", "RAPL energy_uj", 1.5, 0.10),
         ("RamTotal", "ram_total", "/proc/meminfo", 0, 0.001),
         ("RamUsed", "ram_used", "/proc/meminfo", 0, 0.03),
         ("RamUsage", "ram_usage", "/proc/meminfo used / total", 1.5, 0),
