@@ -18,6 +18,11 @@ fn main() -> windows::core::Result<()> {
     use windows::core::w;
 
     unsafe extern "system" fn wndproc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        // Like games: ignore the Alt-key menu. A lone Alt press would otherwise enter the
+        // window-menu modal loop and stop presenting (the smoke test taps Alt to move focus).
+        if m == WM_SYSCOMMAND && (w.0 & 0xFFF0) == SC_KEYMENU as usize {
+            return LRESULT(0);
+        }
         unsafe { DefWindowProcW(h, m, w, l) }
     }
 
