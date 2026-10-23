@@ -17,7 +17,7 @@ no game, virtual displays). "Local" means the developer PC:
 
 | Crate | Tests | Covers |
 |---|---|---|
-| freehm-core | 85 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, late or out-of-order events, bounded memory), game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
+| freehm-core | 86 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, late or out-of-order events, bounded memory), game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
 | freehm | 10 on Windows, 19 on Linux (adds `/proc` probe and permission tests) | path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
 | freehm-helper | 4 | protocol, embedded PawnIO module hashes, request validation |
 
@@ -178,6 +178,62 @@ user switched away from the game, as designed.
 
 The NVIDIA FrameView copy of PresentMon on this PC exits at once with code 1 and no
 output, so the standalone release was used.
+
+## Accuracy
+
+Every value FreeHM shows was compared with independent sources on the developer PC on
+2026-10-22. There are two kinds of reference:
+* tools that read the hardware themselves: LibreHardwareMonitor 0.9.6 (run as administrator) and `nvidia-smi`;
+* Windows' own figures: the Task Manager counters, the Energy Meter and `GlobalMemoryStatusEx`.
+
+`tools/verify/accuracy.ps1` repeats the Windows half of this on demand, and CI runs it (and
+`accuracy.py` on Linux) on every change.
+
+**Automated check** (`accuracy.ps1 -Samples 30 -Load`, means over 30 samples, all PASS):
+
+| Value | FreeHM | Reference | Source |
+|---|---|---|---|
+| CPU usage | 16.62 % | 17.16 % | Windows % Processor Utility (Task Manager) |
+| CPU clock | 4231 MHz | 4202 MHz | Windows frequency × performance (Task Manager) |
+| CPU power | 40.08 W | 40.28 W / 40.27 W | Windows Energy Meter / helper MSR RAPL |
+| CPU temperature | 52.37 °C | 51.97 °C | helper raw package sensor |
+| RAM used / total / % | 8826 / 32478 MiB / 27.03 % | identical | GlobalMemoryStatusEx |
+| GPU temperature | 38.0 °C | 38.3 °C | nvidia-smi |
+| GPU usage, clock, power | 0.95 %, 413 MHz, 12.91 W | 0.93 %, 403 MHz, 12.91 W | nvidia-smi |
+| VRAM used / total / % | 769 / 12227 MiB / 6.29 % | identical | nvidia-smi |
+
+**Against LibreHardwareMonitor**, whose samples were taken by a separate process up to a
+second apart:
+* CPU package temperature: 33.7 vs 35.2 °C.
+* CPU package power: 14.9 vs 16.1 W.
+* GPU temperature: 41.17 vs 41.15 °C.
+* RAM used: 8.558 vs 8.578 GiB.
+
+Both programs read the same Intel package temperature register with TjMax 100 °C, so the
+CPU differences come from sampling at different moments, not calibration. The package
+sensor moves several degrees within milliseconds.
+
+**FPS**: compared with PresentMon, see [FPS and frame time](#fps-and-frame-time-windows).
+
+What was learned about measuring:
+* Starting a process per sample (`freehm --status`, `nvidia-smi`, a WMI query) loads the
+  CPU right when one side samples. That alone made FreeHM look 1.3 °C and 1 W "too high".
+  The scripts therefore read the CPU only through open pipes and in-process counters, and
+  query the GPU in a separate phase.
+* On an idle machine both sides read about 0 % CPU, which proves little. CI therefore runs
+  the check with a steady one-core load (`-Load` / `--load`).
+* The CPU temperature tolerance is 3 °C, because two reads milliseconds apart differ by
+  that much under load.
+
+Values without an independent source here: GPU shared memory (FreeHM reads it from the same
+WDDM counters any other tool would use); AMD and Intel GPUs; AMD CPUs; Linux sensors on
+real hardware (CI checks Linux CPU usage and RAM only).
+
+The engine also refuses to display values that cannot be right:
+* out-of-range values, such as a temperature outside −30…150 °C or usage above 100 %;
+* memory "used" larger than that device's total.
+
+Both are unit-tested.
 
 ## Performance
 

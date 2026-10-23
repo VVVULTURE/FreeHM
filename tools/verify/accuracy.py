@@ -18,7 +18,11 @@ reads files and sockets in-process while sampling the CPU, so it does not load t
 right when FreeHM samples it; nvidia-smi runs in a separate phase afterwards.
 Exit code 1 if anything FAILs.
 
-Usage: tools/verify/accuracy.py [--samples 40] [--json out.json]
+--load keeps one core busy in a separate process during the CPU phase. On an idle machine
+both sides read almost 0 % CPU, which says little; a steady known load makes the CPU usage
+comparison meaningful (CI uses it).
+
+Usage: tools/verify/accuracy.py [--samples 40] [--json out.json] [--load]
 """
 import argparse, glob, json, os, shutil, socket, statistics, struct, subprocess, sys, time
 
@@ -109,7 +113,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--samples", type=int, default=40)
     ap.add_argument("--json")
+    ap.add_argument("--load", action="store_true")
     a = ap.parse_args()
+    load = subprocess.Popen([sys.executable, "-c", "while True: pass"]) if a.load else None
 
     app = App()
     app.readings()  # the first live request starts polling every metric
@@ -138,6 +144,8 @@ def main():
         r["ram_total"], r["ram_used"] = meminfo()
         r["ram_usage"] = 100 * r["ram_used"] / r["ram_total"]
         rows.append(r)
+    if load:
+        load.kill()
     # Phase 2: NVIDIA GPU through nvidia-smi.
     if shutil.which("nvidia-smi"):
         for _ in range(a.samples):
@@ -155,7 +163,9 @@ def main():
     checks = [
         ("CpuUsage", "cpu_usage", "/proc/stat", 5.0, 0),
         ("CpuClock", "cpu_clock", "cpufreq scaling_cur_freq", 0, 0.10),
-        ("CpuTemp", "cpu_temp", "hwmon package sensor", 2.0, 0),
+        # The package sensor swings several degrees within milliseconds under load, and the
+        # two reads are a few milliseconds apart; 3 degrees covers that.
+        ("CpuTemp", "cpu_temp", "hwmon package sensor", 3.0, 0),
         ("CpuPower", "cpu_power", "RAPL energy_uj", 1.5, 0.10),
         ("RamTotal", "ram_total", "/proc/meminfo", 0, 0.001),
         ("RamUsed", "ram_used", "/proc/meminfo", 0, 0.03),

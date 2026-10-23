@@ -19,6 +19,17 @@ shows `N/A`, never a made-up `0`.
 
 ## Install
 
+Downloads are on the repository's **Releases** page:
+
+| File | For |
+|---|---|
+| `FreeHM-<version>-windows-x64-setup.exe` | Windows 11 installer (recommended) |
+| `FreeHM-<version>-windows-x64-portable.zip` | Windows without installing (no helper service, so no FPS or CPU temperature) |
+| `freehm_<version>-1_amd64.deb` | Debian, Ubuntu and derivatives |
+| `FreeHM-<version>-x86_64.AppImage` | Most other Linux distributions |
+| `FreeHM-<version>-linux-x86_64.tar.gz` | The plain Linux binary |
+| `SHA256SUMS.txt` | Checksums of all of the above |
+
 ### Windows 11 (x64)
 
 Run `FreeHM-<version>-windows-x64-setup.exe`.
@@ -156,6 +167,30 @@ as unavailable, with the reason in *Settings ▸ Hardware*.
 * **Linux:** remove the package or AppImage. Run `freehm --remove-permissions` (as root)
   first if you did the sensor setup; the `.deb` package does this automatically. Delete
   `~/.config/autostart/freehm.desktop` if you used the AppImage.
+
+## Checking that the values are correct
+
+`tools/verify/accuracy.ps1` (Windows) and `tools/verify/accuracy.py` (Linux) compare every
+value FreeHM shows with sources FreeHM does not go through. These include Task Manager's
+counters or `/proc`, the Windows Energy Meter or RAPL, hwmon, and `nvidia-smi`. Each
+check passes or fails against a stated tolerance; a value with no independent source on
+your machine is reported as SKIP. FreeHM must be running:
+
+```sh
+pwsh tools/verify/accuracy.ps1          # Windows
+python3 tools/verify/accuracy.py        # Linux
+```
+
+CI runs both on every change. Results from real hardware are in
+[docs/TESTING.md](docs/TESTING.md#accuracy).
+
+## Releases
+
+Pushing a tag `vX.Y.Z` that matches the version in `crates/freehm/Cargo.toml` runs
+`.github/workflows/release.yml`. It runs the full CI pipeline (build, tests, end-to-end
+tests and the accuracy check on Windows and Linux), then publishes a GitHub release with
+the files listed under [Install](#install). Starting the workflow by hand makes a dry run:
+everything is built and kept as workflow artifacts, and nothing is published.
 
 ## Build from source
 

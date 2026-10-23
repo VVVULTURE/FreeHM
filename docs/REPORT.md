@@ -64,6 +64,14 @@ Verified on real hardware (i7-12700KF + NVIDIA, Windows 11):
 
 The AMD/Intel GPU paths and AMD CPU paths have never run on such hardware.
 
+## 3a. Accuracy
+
+Every value FreeHM shows was compared with independent sources on the developer PC; all
+agree within stated tolerances. The sources were LibreHardwareMonitor, `nvidia-smi`, Task
+Manager's counters, the Windows Energy Meter and `GlobalMemoryStatusEx`. The comparison is
+automated in `tools/verify/accuracy.ps1` / `accuracy.py`, and CI runs it on Windows and
+Linux on every change. The table and method are in TESTING.md (Accuracy).
+
 ## 4. FPS and frame time
 
 * **Windows:**
@@ -131,7 +139,7 @@ Verified:
 ## 8. Tests
 
 * **Unit tests (`cargo test --workspace`), all pass:**
-  * core 85
+  * core 86
   * app 10 on Windows, 19 on Linux
   * helper 4
 * **Windows end-to-end, all pass in CI:**
@@ -201,6 +209,8 @@ Built by CI run 39697763172 and downloaded:
   * Multi-monitor placement and DPI changes.
 
 ## 12. Remaining necessary work
+
+Releases: `release.yml` publishes Windows and Linux builds when a `vX.Y.Z` tag is pushed (see README).
 
 1. **Compare more games with PresentMon**: D3D9, OpenGL and Vulkan titles, plus exclusive fullscreen.
 2. **Run the Linux build on a real desktop** (KDE and GNOME): tray, portal shortcut, overlay over a fullscreen game, `--setup-permissions`.

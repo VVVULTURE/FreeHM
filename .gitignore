@@ -8,3 +8,4 @@ target/
 /prompt.txt
 /docs/WORKLOG.md
 /ci-artifacts/
+__pycache__/

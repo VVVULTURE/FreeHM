@@ -63,7 +63,7 @@ jobs:
           '{"schema_version":1,"general":{"start_with_system":false},"permissions":{"first_run_done":true}}' | Set-Content "$env:FREEHM_CONFIG_DIR\config.json"
           Start-Process target/release/freehm.exe -ArgumentList '--background'
           Start-Sleep -Seconds 3
-          ./tools/verify/accuracy.ps1 -Samples 30 -Json ci-out/accuracy-windows.json
+          ./tools/verify/accuracy.ps1 -Samples 30 -Load -Json ci-out/accuracy-windows.json
           $code = $LASTEXITCODE
           & target/release/freehm.exe --quit | Out-String | Out-Null
           exit $code
@@ -139,7 +139,7 @@ jobs:
           dbus-run-session -- target/release/freehm --background & APP=$!
           for _ in $(seq 50); do target/release/freehm --status >/dev/null 2>&1 && break; sleep 0.2; done
           mkdir -p ci-out
-          code=0; python3 tools/verify/accuracy.py --samples 30 --json ci-out/accuracy-linux.json || code=$?
+          code=0; python3 tools/verify/accuracy.py --samples 30 --load --json ci-out/accuracy-linux.json || code=$?
           target/release/freehm --quit || true
           wait "$APP" || true; kill "$XVFB" || true
           exit $code

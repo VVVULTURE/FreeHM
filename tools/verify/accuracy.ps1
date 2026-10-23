@@ -24,10 +24,14 @@
   So the CPU and RAM phase uses only in-process reads (open pipes, performance counters,
   GlobalMemoryStatusEx), and nvidia-smi runs in a separate GPU phase afterwards.
 
+  -Load keeps one core busy in a separate process during the CPU phase. On an idle machine
+  both sides read almost 0 % CPU, which says little; a steady known load makes the CPU usage
+  comparison meaningful (CI uses it).
+
 .EXAMPLE
   ./tools/verify/accuracy.ps1 -Samples 60
 #>
-param([int]$Samples = 40, [string]$Json)
+param([int]$Samples = 40, [string]$Json, [switch]$Load)
 $ErrorActionPreference = 'Stop'
 
 $rights = [IO.Pipes.PipeAccessRights]::ReadData -bor [IO.Pipes.PipeAccessRights]::WriteData -bor [IO.Pipes.PipeAccessRights]::ReadAttributes -bor [IO.Pipes.PipeAccessRights]::Synchronize
@@ -75,6 +79,7 @@ function FreeHM {
 $num = { param($s) $d = 0.0; if ([double]::TryParse($s, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$d)) { $d } else { $null } }
 
 # Phase 1: CPU and RAM, in-process reads only.
+$busy = if ($Load) { Start-Process pwsh -ArgumentList '-NoProfile', '-Command', 'while ($true) {}' -WindowStyle Hidden -PassThru; Start-Sleep -Seconds 1 } else { $null }
 $rows = @()
 for ($i = 0; $i -lt $Samples; $i++) {
     $f = FreeHM
@@ -93,6 +98,7 @@ for ($i = 0; $i -lt $Samples; $i++) {
     }
     Start-Sleep -Milliseconds 500
 }
+if ($busy) { Stop-Process -Id $busy.Id -Force -ErrorAction SilentlyContinue }
 # Phase 2: NVIDIA GPU through nvidia-smi.
 if ($smi) {
     for ($i = 0; $i -lt $Samples; $i++) {
@@ -115,7 +121,9 @@ $checks = @(
     @('CpuClock', 'cpu_clock', 'Windows frequency x performance', 0, 0.05),
     @('CpuPower', 'cpu_power_em', 'Windows Energy Meter (RAPL)', 1.5, 0.08),
     @('CpuPower', 'cpu_power_msr', 'helper MSR RAPL', 1.5, 0.08),
-    @('CpuTemp', 'cpu_temp', 'helper raw package sensor', 2.0, 0),
+    # The package sensor swings several degrees within milliseconds under load, and the two
+    # reads are a few milliseconds apart; 3 degrees covers that, not a calibration error.
+    @('CpuTemp', 'cpu_temp', 'helper raw package sensor', 3.0, 0),
     @('RamTotal', 'ram_total', 'GlobalMemoryStatusEx', 0, 0.001),
     @('RamUsed', 'ram_used', 'GlobalMemoryStatusEx', 0, 0.02),
     @('RamUsage', 'ram_usage', 'GlobalMemoryStatusEx used / total', 1.0, 0),
