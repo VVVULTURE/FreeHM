@@ -186,7 +186,7 @@ CI runs both on every change. Results from real hardware are in
 
 ## Releases
 
-Pushing a tag `vX.Y.Z` that matches the version in `crates/freehm/Cargo.toml` runs
+Pushing a tag `vX.Y.Z` that matches the version in `Cargo.toml` runs
 `.github/workflows/release.yml`. It runs the full CI pipeline (build, tests, end-to-end
 tests and the accuracy check on Windows and Linux), then publishes a GitHub release with
 the files listed under [Install](#install). Starting the workflow by hand makes a dry run:

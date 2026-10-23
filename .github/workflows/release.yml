@@ -2,7 +2,7 @@ name: Release
 
 # Builds FreeHM for Windows 11 (x64) and Linux (x86_64) and publishes a GitHub release.
 #
-# - Push a tag `vX.Y.Z` (matching the version in crates/freehm/Cargo.toml) to publish
+# - Push a tag `vX.Y.Z` (matching the app version, `version` in the workspace Cargo.toml) to publish
 #   release X.Y.Z. Tags with a suffix (`v0.2.0-rc1`) become pre-releases.
 # - Run it by hand (Actions > Release > Run workflow) for a dry run: everything is built
 #   and tested and the files are kept as workflow artifacts, but nothing is published.
@@ -29,12 +29,13 @@ jobs:
       - id: v
         run: |
           set -euo pipefail
-          V=$(grep -m1 '^version' crates/freehm/Cargo.toml | cut -d'"' -f2)
+          V=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="freehm") | .version')
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::could not read the app version (got '$V')"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             TAG=${GITHUB_REF#refs/tags/v}
             # The tag may add a pre-release suffix, but its X.Y.Z must be the app's version.
-            [ "${TAG%%-*}" = "$V" ] || { echo "::error::tag v$TAG does not match the app version $V in crates/freehm/Cargo.toml"; exit 1; }
+            [ "${TAG%%-*}" = "$V" ] || { echo "::error::tag v$TAG does not match the app version $V in Cargo.toml"; exit 1; }
           fi
           echo "FreeHM $V"
 
