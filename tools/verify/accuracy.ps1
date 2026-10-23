@@ -27,6 +27,9 @@
   CPU usage, clock and power are compared over one 12 s window in which every FreeHM
   snapshot is collected (see CpuWindow).
 
+  If any FreeHM poll in a window hit the 100 % cap (machine saturated), CPU usage for that
+  window is reported as skipped: the cap makes the averages differ by construction.
+
   -Load adds a phase with one core kept busy by a separate process and compares CPU usage,
   clock and power again there (as CpuUsage@load, CpuClock@load, CpuPower@load). On an idle machine both sides
   read almost 0 % CPU, which says little; CI uses it. Temperature and power are only
@@ -110,9 +113,12 @@ function CpuWindow([string]$suffix, [int]$seconds) {
     $ref = @{}
     if ($util) {
         $u = $util.NextValue()
-        # Task Manager and FreeHM cap usage at 100 %; % Processor Utility goes above that when
-        # cores run faster than base clock. A saturated machine cannot be compared.
-        if ($u -le 95) { $ref.CpuUsage = $u } else { Write-Host "note: CpuUsage$suffix skipped, CPU saturated ($([math]::Round($u)) % utility)" }
+        # % Processor Utility goes above 100 % when cores run faster than base clock; Task
+        # Manager and FreeHM cap each reading at 100 %. If FreeHM capped any poll in the
+        # window, its average is lower by construction and cannot be compared; otherwise
+        # nothing was capped and the averages must agree, however high they are.
+        $capped = @($vals.CpuUsage | Where-Object { $_ -ge 99.95 }).Count
+        if ($capped -eq 0) { $ref.CpuUsage = $u } else { Write-Host "note: CpuUsage$suffix skipped: FreeHM capped $capped of $($vals.CpuUsage.Count) polls at 100 % (machine saturated, utility $([math]::Round($u)) %)" }
     }
     if ($freq -and $perf) { $ref.CpuClock = $freq.NextValue() * $perf.NextValue() / 100 }
     if ($energyE -and $energyT) {
