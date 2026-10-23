@@ -24,9 +24,11 @@
   So the CPU and RAM phase uses only in-process reads (open pipes, performance counters,
   GlobalMemoryStatusEx), and nvidia-smi runs in a separate GPU phase afterwards.
 
-  -Load keeps one core busy in a separate process during the CPU phase. On an idle machine
-  both sides read almost 0 % CPU, which says little; a steady known load makes the CPU usage
-  comparison meaningful (CI uses it).
+  -Load adds a phase with one core kept busy by a separate process and compares CPU usage
+  and clock again there (as CpuUsage@load / CpuClock@load). On an idle machine both sides
+  read almost 0 % CPU, which says little; CI uses it. Temperature and power are only
+  compared without the artificial load: under it the package sensor swings several
+  degrees between two reads milliseconds apart.
 
 .EXAMPLE
   ./tools/verify/accuracy.ps1 -Samples 60
@@ -79,26 +81,47 @@ function FreeHM {
 $num = { param($s) $d = 0.0; if ([double]::TryParse($s, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$d)) { $d } else { $null } }
 
 # Phase 1: CPU and RAM, in-process reads only.
-$busy = if ($Load) { Start-Process pwsh -ArgumentList '-NoProfile', '-Command', 'while ($true) {}' -WindowStyle Hidden -PassThru; Start-Sleep -Seconds 1 } else { $null }
 $rows = @()
 for ($i = 0; $i -lt $Samples; $i++) {
+    # The usage and clock counters average over the time since their previous read. Read
+    # them just before and just after the pause, so they cover only the pause, when this
+    # script is idle; FreeHM's newest poll window also lies in it. Otherwise the reference
+    # would include this script's own work (several % on a 4-core CI machine).
+    if ($util) { [void]$util.NextValue() }; if ($perf) { [void]$perf.NextValue() }
+    Start-Sleep -Milliseconds 500
+    $cpuUsage = if ($util) { $util.NextValue() } else { $null }
+    $cpuClock = if ($freq -and $perf) { $freq.NextValue() * $perf.NextValue() / 100 } else { $null }
+    $cpuPowerEm = if ($energy) { $energy.NextValue() / 1000 } else { $null }
     $f = FreeHM
     $h = if ($helper) { (Frame $helper '{"v":1,"cpu":true,"frames":false}').cpu } else { $null }
     $mem = [FreeHMVerifyMem]::Read()
     $rows += [pscustomobject]@{
         f = $f
-        cpu_usage = if ($util) { $util.NextValue() } else { $null }
-        cpu_clock = if ($freq -and $perf) { $freq.NextValue() * $perf.NextValue() / 100 } else { $null }
-        cpu_power_em = if ($energy) { $energy.NextValue() / 1000 } else { $null }
+        cpu_usage = $cpuUsage
+        cpu_clock = $cpuClock
+        cpu_power_em = $cpuPowerEm
         cpu_power_msr = if ($h -and $h.package_power_w.Ok) { [double]$h.package_power_w.Ok } else { $null }
         cpu_temp = if ($h -and $null -ne $h.package_temp_c.Ok) { [double]$h.package_temp_c.Ok } else { $null }
         ram_total = [double]$mem[0]
         ram_used = [double]$mem[0] - [double]$mem[1]
         ram_usage = 100 * ([double]$mem[0] - [double]$mem[1]) / [double]$mem[0]
     }
-    Start-Sleep -Milliseconds 500
 }
-if ($busy) { Stop-Process -Id $busy.Id -Force -ErrorAction SilentlyContinue }
+# Phase 1b (-Load): CPU usage and clock again with one core kept busy.
+if ($Load) {
+    $busy = Start-Process pwsh -ArgumentList '-NoProfile', '-Command', 'while ($true) {}' -WindowStyle Hidden -PassThru
+    Start-Sleep -Seconds 1
+    for ($i = 0; $i -lt $Samples; $i++) {
+        if ($util) { [void]$util.NextValue() }; if ($perf) { [void]$perf.NextValue() }
+        Start-Sleep -Milliseconds 500
+        $cpuUsage = if ($util) { $util.NextValue() } else { $null }
+        $cpuClock = if ($freq -and $perf) { $freq.NextValue() * $perf.NextValue() / 100 } else { $null }
+        $f = FreeHM
+        $f['CpuUsage@load'] = $f['CpuUsage']; $f['CpuClock@load'] = $f['CpuClock']
+        $rows += [pscustomobject]@{ f = $f; cpu_usage_load = $cpuUsage; cpu_clock_load = $cpuClock }
+    }
+    Stop-Process -Id $busy.Id -Force -ErrorAction SilentlyContinue
+}
 # Phase 2: NVIDIA GPU through nvidia-smi.
 if ($smi) {
     for ($i = 0; $i -lt $Samples; $i++) {
@@ -119,10 +142,12 @@ $app.Dispose(); if ($helper) { $helper.Dispose() }
 $checks = @(
     @('CpuUsage', 'cpu_usage', 'Windows % Processor Utility', 3.0, 0),
     @('CpuClock', 'cpu_clock', 'Windows frequency x performance', 0, 0.05),
+    @('CpuUsage@load', 'cpu_usage_load', 'Windows % Processor Utility, one core busy', 3.0, 0),
+    @('CpuClock@load', 'cpu_clock_load', 'Windows frequency x performance, one core busy', 0, 0.05),
     @('CpuPower', 'cpu_power_em', 'Windows Energy Meter (RAPL)', 1.5, 0.08),
     @('CpuPower', 'cpu_power_msr', 'helper MSR RAPL', 1.5, 0.08),
-    # The package sensor swings several degrees within milliseconds under load, and the two
-    # reads are a few milliseconds apart; 3 degrees covers that, not a calibration error.
+    # The package sensor moves within milliseconds and the two reads are a few milliseconds
+    # apart; 3 degrees covers that, not a calibration error.
     @('CpuTemp', 'cpu_temp', 'helper raw package sensor', 3.0, 0),
     @('RamTotal', 'ram_total', 'GlobalMemoryStatusEx', 0, 0.001),
     @('RamUsed', 'ram_used', 'GlobalMemoryStatusEx', 0, 0.02),
@@ -150,7 +175,7 @@ foreach ($c in $checks) {
     $results += [pscustomobject]@{ metric = $metric; reference = $src; result = $(if ($ok) { 'PASS' } else { 'FAIL' }); freehm = $mf; ref = $mr; diff = $diff; tolerance = $tol; n = $pairs.Count }
 }
 $fmt = { param($m, $v) if ($null -eq $v) { '' } elseif ($m -match '^(Ram|Vram)(Used|Total)$') { '{0:N1} MiB' -f ($v / 1MB) } else { '{0:N2}' -f $v } }
-$results | ForEach-Object { "{0,-5} {1,-10} FreeHM {2,14}  reference {3,14}  |diff| {4,12} <= {5,12}  {6} (n={7})" -f $_.result, $_.metric, (& $fmt $_.metric $_.freehm), (& $fmt $_.metric $_.ref), (& $fmt $_.metric $_.diff), (& $fmt $_.metric $_.tolerance), $_.reference, $_.n }
+$results | ForEach-Object { "{0,-5} {1,-13} FreeHM {2,14}  reference {3,14}  |diff| {4,12} <= {5,12}  {6} (n={7})" -f $_.result, $_.metric, (& $fmt $_.metric $_.freehm), (& $fmt $_.metric $_.ref), (& $fmt $_.metric $_.diff), (& $fmt $_.metric $_.tolerance), $_.reference, $_.n }
 if ($Json) { $results | ConvertTo-Json | Set-Content $Json }
 if ($failed) { Write-Host "accuracy check FAILED"; exit 1 }
 Write-Host "accuracy check passed ($(@($results | Where-Object result -eq 'PASS').Count) checks, $(@($results | Where-Object result -eq 'SKIP').Count) skipped: no independent source here)"

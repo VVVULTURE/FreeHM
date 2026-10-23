@@ -18,9 +18,11 @@ reads files and sockets in-process while sampling the CPU, so it does not load t
 right when FreeHM samples it; nvidia-smi runs in a separate phase afterwards.
 Exit code 1 if anything FAILs.
 
---load keeps one core busy in a separate process during the CPU phase. On an idle machine
-both sides read almost 0 % CPU, which says little; a steady known load makes the CPU usage
-comparison meaningful (CI uses it).
+--load adds a phase with one core kept busy by a separate process and compares CPU usage
+and clock again there (CpuUsage@load / CpuClock@load). On an idle machine both sides read
+almost 0 % CPU, which says little; CI uses it. Temperature and power are only compared
+without the artificial load: under it the package sensor swings several degrees between
+two reads milliseconds apart.
 
 Usage: tools/verify/accuracy.py [--samples 40] [--json out.json] [--load]
 """
@@ -115,24 +117,24 @@ def main():
     ap.add_argument("--json")
     ap.add_argument("--load", action="store_true")
     a = ap.parse_args()
-    load = subprocess.Popen([sys.executable, "-c", "while True: pass"]) if a.load else None
 
     app = App()
     app.readings()  # the first live request starts polling every metric
     time.sleep(2)
     tfile, efile = cpu_temp_file(), rapl_file()
     rows = []
-    prev_stat = proc_stat()
     prev_e = (int(read(efile)), time.monotonic()) if efile else None
     # Phase 1: CPU and RAM, in-process reads only.
     for _ in range(a.samples):
+        # CPU usage over the pause only, when this script is idle; FreeHM's newest poll
+        # window also lies in it. Otherwise the reference includes this script's own work.
+        before = proc_stat()
         time.sleep(0.5)
-        f = app.readings()
         busy, total = proc_stat()
+        f = app.readings()
         r = {"f": f}
-        if total > prev_stat[1]:
-            r["cpu_usage"] = 100 * (busy - prev_stat[0]) / (total - prev_stat[1])
-        prev_stat = (busy, total)
+        if total > before[1]:
+            r["cpu_usage"] = 100 * (busy - before[0]) / (total - before[1])
         r["cpu_clock"] = cpu_clock()
         if tfile:
             r["cpu_temp"] = int(read(tfile)) / 1000
@@ -144,7 +146,20 @@ def main():
         r["ram_total"], r["ram_used"] = meminfo()
         r["ram_usage"] = 100 * r["ram_used"] / r["ram_total"]
         rows.append(r)
-    if load:
+    # Phase 1b (--load): CPU usage and clock again with one core kept busy.
+    if a.load:
+        load = subprocess.Popen([sys.executable, "-c", "while True: pass"])
+        time.sleep(1)
+        for _ in range(a.samples):
+            before = proc_stat()
+            time.sleep(0.5)
+            busy, total = proc_stat()
+            f = app.readings()
+            r = {"f": {"CpuUsage@load": f.get("CpuUsage"), "CpuClock@load": f.get("CpuClock")}, "cpu_clock_load": cpu_clock()}
+            r["f"] = {k: v for k, v in r["f"].items() if v is not None}
+            if total > before[1]:
+                r["cpu_usage_load"] = 100 * (busy - before[0]) / (total - before[1])
+            rows.append(r)
         load.kill()
     # Phase 2: NVIDIA GPU through nvidia-smi.
     if shutil.which("nvidia-smi"):
@@ -163,8 +178,10 @@ def main():
     checks = [
         ("CpuUsage", "cpu_usage", "/proc/stat", 5.0, 0),
         ("CpuClock", "cpu_clock", "cpufreq scaling_cur_freq", 0, 0.10),
-        # The package sensor swings several degrees within milliseconds under load, and the
-        # two reads are a few milliseconds apart; 3 degrees covers that.
+        ("CpuUsage@load", "cpu_usage_load", "/proc/stat, one core busy", 5.0, 0),
+        ("CpuClock@load", "cpu_clock_load", "cpufreq scaling_cur_freq, one core busy", 0, 0.10),
+        # The package sensor moves within milliseconds and the two reads are a few
+        # milliseconds apart; 3 degrees covers that.
         ("CpuTemp", "cpu_temp", "hwmon package sensor", 3.0, 0),
         ("CpuPower", "cpu_power", "RAPL energy_uj", 1.5, 0.10),
         ("RamTotal", "ram_total", "/proc/meminfo", 0, 0.001),
@@ -197,7 +214,7 @@ def main():
         return f"{v / MiB:,.1f} MiB" if m.endswith(("Used", "Total")) else f"{v:,.2f}"
 
     for r in results:
-        print(f"{r['result']:5} {r['metric']:10} FreeHM {fmt(r['metric'], r.get('freehm')):>14}  reference {fmt(r['metric'], r.get('ref')):>14}  "
+        print(f"{r['result']:5} {r['metric']:13} FreeHM {fmt(r['metric'], r.get('freehm')):>14}  reference {fmt(r['metric'], r.get('ref')):>14}  "
               f"|diff| {fmt(r['metric'], r.get('diff')):>12} <= {fmt(r['metric'], r.get('tolerance')):>12}  {r['reference']} (n={r['n']})")
     if a.json:
         with open(a.json, "w") as f:
