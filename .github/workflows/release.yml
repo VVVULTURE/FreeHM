@@ -1,0 +1,98 @@
+name: Release
+
+# Builds FreeHM for Windows 11 (x64) and Linux (x86_64) and publishes a GitHub release.
+#
+# - Push a tag `vX.Y.Z` (matching the version in crates/freehm/Cargo.toml) to publish
+#   release X.Y.Z. Tags with a suffix (`v0.2.0-rc1`) become pre-releases.
+# - Run it by hand (Actions > Release > Run workflow) for a dry run: everything is built
+#   and tested and the files are kept as workflow artifacts, but nothing is published.
+#
+# Nothing is published unless the full CI pipeline passes first: build, unit tests,
+# end-to-end tests on both systems and the accuracy check against independent sources.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        run: |
+          set -euo pipefail
+          V=$(grep -m1 '^version' crates/freehm/Cargo.toml | cut -d'"' -f2)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG=${GITHUB_REF#refs/tags/v}
+            # The tag may add a pre-release suffix, but its X.Y.Z must be the app's version.
+            [ "${TAG%%-*}" = "$V" ] || { echo "::error::tag v$TAG does not match the app version $V in crates/freehm/Cargo.toml"; exit 1; }
+          fi
+          echo "FreeHM $V"
+
+  ci:
+    name: CI
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    name: Portable archives and checksums
+    needs: [version, ci]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+      - name: Assemble release files
+        run: |
+          set -euo pipefail
+          V=${{ needs.version.outputs.version }}
+          mkdir -p release
+          cp artifacts/windows-installer/*.exe release/
+          cp artifacts/linux-packages/*.deb artifacts/linux-packages/*.AppImage release/
+          # Portable Windows archive: the two executables plus licences, no installer.
+          mkdir -p "FreeHM-$V-windows-x64-portable"
+          cp -r artifacts/windows-binaries/. "FreeHM-$V-windows-x64-portable/"
+          (cd "FreeHM-$V-windows-x64-portable" && zip -qr "../release/FreeHM-$V-windows-x64-portable.zip" .)
+          # Plain Linux binary archive for distributions without .deb or AppImage support.
+          mkdir -p "FreeHM-$V-linux-x86_64"
+          cp -r artifacts/linux-binaries/. "FreeHM-$V-linux-x86_64/"
+          chmod +x "FreeHM-$V-linux-x86_64/freehm"
+          tar -czf "release/FreeHM-$V-linux-x86_64.tar.gz" "FreeHM-$V-linux-x86_64"
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          ls -l release; cat release/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v5
+        with:
+          name: release-files
+          path: release/*
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-files
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: FreeHM ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          body: |
+            **Windows 11 (x64):** `FreeHM-${{ needs.version.outputs.version }}-windows-x64-setup.exe` (installer; run as administrator to also install the optional helper service for FPS and CPU temperature), or the portable zip.
+            **Linux (x86_64):** the `.deb`, the AppImage, or the plain `.tar.gz`.
+            Verify downloads against `SHA256SUMS.txt`.
+          files: release/*

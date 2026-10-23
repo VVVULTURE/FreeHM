@@ -3,9 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  # The release workflow runs this whole pipeline first and publishes its artifacts.
+  workflow_call:
 
 permissions:
   contents: read
@@ -54,6 +55,18 @@ jobs:
       - name: End-to-end (overlay, click-through, shortcut, helper service)
         shell: pwsh
         run: ./tools/ci/windows-smoke-test.ps1 -Bin target\release -Out ci-out -Helper
+      - name: Accuracy check (FreeHM vs independent sources, real sensors)
+        shell: pwsh
+        run: |
+          $env:FREEHM_CONFIG_DIR = Join-Path $env:RUNNER_TEMP "freehm-accuracy"
+          New-Item -ItemType Directory -Force $env:FREEHM_CONFIG_DIR, ci-out | Out-Null
+          '{"schema_version":1,"general":{"start_with_system":false},"permissions":{"first_run_done":true}}' | Set-Content "$env:FREEHM_CONFIG_DIR\config.json"
+          Start-Process target/release/freehm.exe -ArgumentList '--background'
+          Start-Sleep -Seconds 3
+          ./tools/verify/accuracy.ps1 -Samples 30 -Json ci-out/accuracy-windows.json
+          $code = $LASTEXITCODE
+          & target/release/freehm.exe --quit | Out-String | Out-Null
+          exit $code
       - name: Installer silent install / uninstall
         shell: pwsh
         run: |
@@ -80,6 +93,18 @@ jobs:
         with:
           name: windows-installer
           path: dist/*.exe
+      - name: Portable files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force portable/licenses | Out-Null
+          Copy-Item target/release/freehm.exe, target/release/freehm-helper.exe, README.md, THIRD_PARTY_NOTICES.md portable/
+          Copy-Item LICENSE portable/LICENSE.txt
+          Copy-Item assets/fonts/OFL-Exo2.txt, dist/THIRD_PARTY_LICENSES.html portable/licenses/
+          Copy-Item crates/freehm-helper/modules/COPYING.LGPL-2.1 portable/licenses/PawnIO-modules-LGPL-2.1.txt
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows-binaries
+          path: portable
 
   linux:
     name: Linux (build, test, packages, X11 + Wayland end-to-end)
@@ -102,6 +127,22 @@ jobs:
         run: cargo build --release -p freehm
       - name: End-to-end (X11 via Xvfb, Wayland via headless sway)
         run: bash tools/ci/linux-overlay-test.sh target/release/freehm ci-out
+      - name: Accuracy check (FreeHM vs independent sources, real sensors)
+        run: |
+          set -euo pipefail
+          export FREEHM_CONFIG_DIR; FREEHM_CONFIG_DIR=$(mktemp -d)
+          export XDG_CONFIG_HOME; XDG_CONFIG_HOME=$(mktemp -d)
+          export DISPLAY=:98 XDG_SESSION_TYPE=x11; unset WAYLAND_DISPLAY
+          echo '{"schema_version":1,"general":{"start_with_system":false},"permissions":{"first_run_done":true}}' > "$FREEHM_CONFIG_DIR/config.json"
+          Xvfb :98 -screen 0 1280x720x24 & XVFB=$!
+          for _ in $(seq 50); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.2; done
+          dbus-run-session -- target/release/freehm --background & APP=$!
+          for _ in $(seq 50); do target/release/freehm --status >/dev/null 2>&1 && break; sleep 0.2; done
+          mkdir -p ci-out
+          code=0; python3 tools/verify/accuracy.py --samples 30 --json ci-out/accuracy-linux.json || code=$?
+          target/release/freehm --quit || true
+          wait "$APP" || true; kill "$XVFB" || true
+          exit $code
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about,cargo-deb
@@ -138,21 +179,12 @@ jobs:
           path: |
             dist/*.deb
             dist/*.AppImage
-
-  release:
-    name: GitHub release (tags only)
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v5
+      - name: Portable files
+        run: |
+          mkdir -p portable/licenses
+          cp target/release/freehm README.md LICENSE THIRD_PARTY_NOTICES.md portable/
+          cp assets/fonts/OFL-Exo2.txt dist/THIRD_PARTY_LICENSES.html portable/licenses/
+      - uses: actions/upload-artifact@v5
         with:
-          path: artifacts
-      - uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          files: |
-            artifacts/windows-installer/*.exe
-            artifacts/linux-packages/*
+          name: linux-binaries
+          path: portable

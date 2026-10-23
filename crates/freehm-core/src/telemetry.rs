@@ -305,6 +305,7 @@ impl Engine {
             readings.push(reading);
         }
         readings.sort_by(|a, b| a.device.cmp(&b.device).then(a.metric.cmp(&b.metric)));
+        cross_check(&mut readings);
         let provider_status = self
             .slots
             .iter()
@@ -319,6 +320,24 @@ impl Engine {
             })
             .collect();
         Snapshot { devices, readings, provider_status, seq: self.seq }
+    }
+}
+
+/// Checks between readings of the same device that each passed its own range check:
+/// memory "used" can never exceed that device's total, so such a pair means one of the two
+/// sources is wrong, and the used value is withheld rather than shown.
+fn cross_check(readings: &mut [Reading]) {
+    use MetricId::*;
+    for (used, total) in [(RamUsed, RamTotal), (VramUsed, VramTotal)] {
+        let totals: Vec<(String, f64)> = readings.iter().filter(|r| r.metric == total).filter_map(|r| Some((r.device.clone(), r.value?))).collect();
+        for r in readings.iter_mut().filter(|r| r.metric == used) {
+            let (Some(v), Some((_, t))) = (r.value, totals.iter().find(|(d, _)| *d == r.device)) else { continue };
+            // 1 % slack: used and total may come from samples taken a moment apart.
+            if v > t * 1.01 {
+                *r =
+                    Reading::unavailable(used, &r.device, &r.source, format!("inconsistent reading: {} exceeds {}", used.display_name(), total.display_name()));
+            }
+        }
     }
 }
 
@@ -702,6 +721,28 @@ mod tests {
         assert_eq!(s.devices.len(), 2);
         assert_eq!(s.get("gpu:1", MetricId::GpuTemp).unwrap().value, Some(70.0));
         assert_eq!(s.get("gpu:0", MetricId::GpuTemp).unwrap().value, Some(50.0));
+    }
+
+    #[test]
+    fn used_memory_above_total_is_withheld() {
+        let mk = |m: MetricId, v: f64| Reading {
+            metric: m,
+            device: "gpu:0".into(),
+            value: Some(v),
+            unit: m.unit(),
+            freshness: Freshness::Fresh,
+            age_ms: Some(0),
+            reason: None,
+            source: "test".into(),
+        };
+        let mut rs = vec![mk(MetricId::VramUsed, 13.0e9), mk(MetricId::VramTotal, 12.0e9), mk(MetricId::RamUsed, 8.0e9), mk(MetricId::RamTotal, 32.0e9)];
+        rs[2].device = "mem:system".into();
+        rs[3].device = "mem:system".into();
+        cross_check(&mut rs);
+        assert_eq!(rs[0].value, None);
+        assert!(rs[0].reason.as_deref().unwrap().contains("inconsistent"));
+        assert_eq!(rs[1].value, Some(12.0e9));
+        assert_eq!(rs[2].value, Some(8.0e9));
     }
 
     #[test]
