@@ -107,10 +107,16 @@ unavailable ("sensor reported an implausible value").
 * **Windows:** a layered window (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST |
   WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`) updated with `UpdateLayeredWindow` from a
   premultiplied DIB. `WM_NCHITTEST → HTTRANSPARENT` adds a second layer of click-through.
-  It is shown with `SW_SHOWNOACTIVATE`, and topmost is re-asserted on foreground changes.
+  It is shown with `SW_SHOWNOACTIVATE`. Topmost is re-asserted on foreground changes and
+  whenever another visible window overlapping it has been put above it (checked on every
+  redraw and once a second, at most four times a second).
   Per-monitor DPI v2 aware, placed in physical pixels per monitor.
   `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` is an option. Exclusive fullscreen is
-  detected with `SHQueryUserNotificationState` (QUNS_RUNNING_D3D_FULL_SCREEN) and reported.
+  detected with `SHQueryUserNotificationState` (QUNS_RUNNING_D3D_FULL_SCREEN) and the
+  foreground window's monitor. Windows draws nothing else on that monitor then (measured:
+  a click-through layered window is not drawn; any other window over the game takes it out
+  of exclusive mode), so the overlay moves to another monitor, or the user is told why it
+  cannot be seen.
 * **X11:** a 32-bit ARGB override-redirect window, so the window manager never manages,
   focuses or decorates it. It has an empty XShape input region (click-through), monitors
   come from RandR, and scale from `Xft.dpi`. Without a compositing manager the background

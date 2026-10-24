@@ -220,6 +220,24 @@ impl Platform for WinPlatform {
         self.overlay.raise();
     }
 
+    fn overlay_keep_on_top(&mut self) {
+        self.overlay.raise_if_covered();
+    }
+
+    fn exclusive_fullscreen_monitor(&mut self) -> Option<String> {
+        probe::exclusive_fullscreen_monitor()
+    }
+
+    fn notify(&mut self, title: &str, text: &str) {
+        TRAY.with(|t| {
+            if let Ok(t) = t.try_borrow()
+                && let Some(t) = t.as_ref()
+            {
+                t.notify(title, text);
+            }
+        });
+    }
+
     fn register_hotkey(&mut self, hk: &Hotkey) -> Result<String, String> {
         unsafe {
             if self.hotkey_registered {

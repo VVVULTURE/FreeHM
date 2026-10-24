@@ -239,6 +239,14 @@ const NOT_GAMES: &[&str] = &[
     "textinputhost",
     "lockapp",
     "systemsettings",
+    // Screenshot tools cover the whole screen while selecting a region.
+    "snippingtool",
+    "screenclippinghost",
+    "screensketch",
+    "sharex",
+    "greenshot",
+    "lightshot",
+    "magnify",
     "taskmgr",
     "mmc",
     "cmd",
@@ -465,6 +473,8 @@ mod tests {
         assert!(!c.classify(&steam, &cfg, false).is_game());
         let helper = proc(3, 2, r"C:\Program Files (x86)\Steam\bin\cef\cef.win7x64\steamwebhelper.exe");
         assert!(!c.classify(&helper, &cfg, true).is_game(), "launcher stays non-game even fullscreen");
+        let snip = proc(4, 0, r"C:\Program Files\WindowsApps\Microsoft.ScreenSketch_11.2509.18.0_x64__8wekyb3d8bbwe\SnippingTool\SnippingTool.exe");
+        assert!(!c.classify(&snip, &cfg, true).is_game(), "screenshot tools cover the screen while selecting but are not games");
     }
 
     #[test]

@@ -121,7 +121,7 @@ fn main() {
                 "--show" => Request::SetOverlayVisible(true),
                 "--hide" => Request::SetOverlayVisible(false),
                 "--quit" => Request::Quit,
-                _ => Request::GetStatus { live: false },
+                _ => Request::GetStatus { live: false, show_overlay: false },
             };
             match send(req) {
                 Ok(Response::Status(s)) => {

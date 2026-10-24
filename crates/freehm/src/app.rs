@@ -93,6 +93,15 @@ pub trait Platform {
     fn overlay_set_capture_excluded(&mut self, on: bool);
     /// Re-assert z-order above other topmost windows (after a foreground change).
     fn overlay_raise(&mut self) {}
+    /// Raise the overlay again if another window has been put above it (called about once a
+    /// second while it is shown).
+    fn overlay_keep_on_top(&mut self) {}
+    /// The monitor on which the foreground program holds exclusive fullscreen, if any.
+    fn exclusive_fullscreen_monitor(&mut self) -> Option<String> {
+        None
+    }
+    /// Show a desktop notification (tray balloon / toast).
+    fn notify(&mut self, _title: &str, _text: &str) {}
     /// Register (replacing any previous) global shortcut. Ok = mechanism description.
     fn register_hotkey(&mut self, hk: &Hotkey) -> Result<String, String>;
     fn update_tray(&mut self, st: &TrayState);
@@ -125,9 +134,15 @@ pub struct App {
     font_note: Option<String>,
     last_drawn: Option<(Vec<Row>, Style, Placement)>,
     settings_live_until: Option<Instant>,
+    /// The settings window asked to see the overlay (its Overlay page is open) until then.
+    preview_until: Option<Instant>,
     hotkey: HotkeyStatus,
     monitors: Vec<MonitorInfo>,
     monitors_at: Instant,
+    /// Monitor on which a game holds exclusive fullscreen (nothing else is drawn there).
+    exclusive_on: Option<String>,
+    /// The game that the "overlay cannot be seen" notification was shown for.
+    exclusive_notified: Option<u32>,
     capture_excluded: bool,
     exiting: bool,
     /// `FREEHM_PROFILE=1`: (render time, present time, redraws), logged every 50 redraws.
@@ -163,9 +178,12 @@ impl App {
             font_note,
             last_drawn: None,
             settings_live_until: None,
+            preview_until: None,
             hotkey: HotkeyStatus::default(),
             monitors: Vec::new(),
             monitors_at: Instant::now(),
+            exclusive_on: None,
+            exclusive_notified: None,
             capture_excluded: false,
             exiting: false,
             profile: std::env::var_os("FREEHM_PROFILE").map(|_| (Duration::ZERO, Duration::ZERO, 0)),
@@ -198,6 +216,7 @@ impl App {
                 }
                 self.game = g;
                 self.refresh(p);
+                self.check_exclusive(p);
             }
             AppEvent::Hotkey => self.toggle(p),
             AppEvent::HotkeyResult(r) => {
@@ -247,6 +266,7 @@ impl App {
                 if self.visible {
                     p.overlay_raise();
                 }
+                self.check_exclusive(p);
             }
             AppEvent::Quit => self.quit(p),
         }
@@ -254,10 +274,20 @@ impl App {
 
     /// Called about once a second by the platform loop.
     pub fn tick(&mut self, p: &mut dyn Platform) {
+        if self.visible {
+            p.overlay_keep_on_top();
+        }
+        self.check_exclusive(p);
         if let Some(t) = self.settings_live_until
             && Instant::now() >= t
         {
             self.settings_live_until = None;
+            self.refresh(p);
+        }
+        if let Some(t) = self.preview_until
+            && Instant::now() >= t
+        {
+            self.preview_until = None;
             self.refresh(p);
         }
         // Monitor layouts can change without a notification reaching us (e.g. a monitor
@@ -297,13 +327,20 @@ impl App {
     fn handle_request(&mut self, req: Request, p: &mut dyn Platform) -> Response {
         match req {
             Request::Hello { .. } => Response::Hello { version: freehm_core::ipc::PROTOCOL_VERSION, app_version: freehm_core::APP_VERSION.into() },
-            Request::GetStatus { live } => {
+            Request::GetStatus { live, show_overlay } => {
+                let mut changed = false;
                 if live {
-                    let was = self.settings_live_until.is_some();
+                    changed |= self.settings_live_until.is_none();
                     self.settings_live_until = Some(Instant::now() + Duration::from_secs(3));
-                    if !was {
-                        self.refresh(p);
-                    }
+                }
+                if show_overlay {
+                    changed |= self.preview_until.is_none();
+                    self.preview_until = Some(Instant::now() + Duration::from_secs(3));
+                } else if live && self.preview_until.take().is_some() {
+                    changed = true;
+                }
+                if changed {
+                    self.refresh(p);
                 }
                 Response::Status(Box::new(self.status(p)))
             }
@@ -398,6 +435,7 @@ impl App {
             supported: unsupported.is_none(),
             active_game: self.game.active.as_ref().map(|g| g.pid),
             show_on_desktop: self.cfg.overlay.show_on_desktop,
+            settings_preview: self.preview_until.is_some(),
         };
         let (visible, reason) = self.vis.decide(inputs);
         let changed = visible != self.visible;
@@ -437,12 +475,81 @@ impl App {
         }
     }
 
-    fn target_monitor(&self) -> Option<MonitorInfo> {
+    /// The monitor chosen in the settings (primary when the chosen one is not connected).
+    fn chosen_monitor(&self) -> Option<MonitorInfo> {
         let by_name = match &self.cfg.overlay.monitor {
             MonitorChoice::Named(n) => self.monitors.iter().find(|m| &m.name == n),
             MonitorChoice::Primary => None,
         };
         by_name.or_else(|| self.monitors.iter().find(|m| m.primary)).or_else(|| self.monitors.first()).cloned()
+    }
+
+    /// Where the overlay goes: the chosen monitor, unless a game holds it in exclusive
+    /// fullscreen (where Windows draws nothing over the game); then another monitor,
+    /// preferring the primary one.
+    fn target_monitor(&self) -> Option<MonitorInfo> {
+        let m = self.chosen_monitor()?;
+        Some(pick_monitor(m, &self.monitors, self.exclusive_on.as_deref(), self.cfg.overlay.avoid_exclusive_fullscreen))
+    }
+
+    /// Track exclusive fullscreen (Windows reports it but sends no event; checked on game
+    /// and foreground changes and once a second). FreeHM never injects into games, so it
+    /// moves the overlay to another monitor, or says once why it cannot be seen.
+    fn check_exclusive(&mut self, p: &mut dyn Platform) {
+        let now = if self.game.active.is_some() { p.exclusive_fullscreen_monitor() } else { None };
+        if now == self.exclusive_on {
+            return;
+        }
+        match &now {
+            Some(m) => log::info!("exclusive fullscreen on {m}"),
+            None => log::info!("exclusive fullscreen ended"),
+        }
+        self.exclusive_on = now;
+        if let Some(g) = &self.game.active
+            && self.visible
+            && self.exclusive_notified != Some(g.pid)
+            && self.exclusive_message().is_some_and(|(blocked, _)| blocked)
+        {
+            self.exclusive_notified = Some(g.pid);
+            p.notify(
+                "FreeHM cannot draw over this game",
+                &format!(
+                    "{} uses exclusive fullscreen, and Windows draws no other window over it. Switch the game to borderless (windowed) fullscreen to see the overlay.",
+                    g.name
+                ),
+            );
+        }
+        self.redraw(p, true);
+    }
+
+    /// While a game holds exclusive fullscreen: (overlay cannot be seen, explanation).
+    fn exclusive_message(&self) -> Option<(bool, String)> {
+        let ex = self.exclusive_on.as_ref()?;
+        let game = self.game.active.as_ref().map(|g| g.name.as_str()).unwrap_or("A game");
+        let target = self.target_monitor()?;
+        Some(if target.name == *ex {
+            let other = if self.monitors.len() < 2 {
+                ""
+            } else if !self.cfg.overlay.avoid_exclusive_fullscreen {
+                ", or let FreeHM show the overlay on another monitor meanwhile (Overlay settings)"
+            } else {
+                ""
+            };
+            (
+                true,
+                format!(
+                    "{game} uses exclusive fullscreen on {ex}: Windows draws no other window over it, so the overlay cannot be seen there. Switch the game to borderless (windowed) fullscreen{other}."
+                ),
+            )
+        } else {
+            (
+                false,
+                format!(
+                    "{game} uses exclusive fullscreen on {ex}, where Windows draws no other window over it, so the overlay is shown on {} instead. Borderless (windowed) fullscreen shows it over the game.",
+                    target.name
+                ),
+            )
+        })
     }
 
     /// Render and present if anything visible changed. `force` re-presents even if the text
@@ -514,7 +621,7 @@ impl App {
                 reason: self.vis_reason.clone(),
                 backend: p.overlay_backend(),
                 unsupported: p.overlay_unsupported(),
-                warning: self.game.warning.clone(),
+                warning: self.exclusive_message().map(|(_, m)| m).or_else(|| self.game.warning.clone()),
             },
             hotkey: self.hotkey.clone(),
             game: GameStatus { detection_enabled: self.cfg.detection.auto_detect, active: self.game.active.clone(), foreground: self.game.foreground.clone() },
@@ -523,6 +630,15 @@ impl App {
             monitors: self.monitors.clone(),
             notes,
         }
+    }
+}
+
+/// The overlay's monitor: `chosen`, unless a game holds it in exclusive fullscreen and
+/// `avoid` is on; then another monitor, preferring the primary one.
+pub fn pick_monitor(chosen: MonitorInfo, monitors: &[MonitorInfo], exclusive_on: Option<&str>, avoid: bool) -> MonitorInfo {
+    match exclusive_on {
+        Some(ex) if avoid && ex == chosen.name => monitors.iter().filter(|m| m.name != ex).min_by_key(|m| !m.primary).cloned().unwrap_or(chosen),
+        _ => chosen,
     }
 }
 
@@ -577,6 +693,19 @@ mod tests {
         c.overlay.anchor = Anchor::TopRight;
         let p = compute_placement(&m2, &c, 100, 50);
         assert_eq!((p.x, p.y), (3840 - 100 - 15, 30));
+    }
+
+    #[test]
+    fn exclusive_fullscreen_moves_the_overlay_to_another_monitor() {
+        let named = |n: &str, primary: bool| MonitorInfo { name: n.into(), primary, x: 0, y: 0, width: 1920, height: 1080, scale: 1.0 };
+        let (a, b, c) = (named("A", true), named("B", false), named("C", false));
+        let all = [a.clone(), b.clone(), c.clone()];
+        assert_eq!(pick_monitor(a.clone(), &all, None, true), a, "no exclusive fullscreen: the chosen monitor");
+        assert_eq!(pick_monitor(a.clone(), &all, Some("B"), true), a, "the game is on another monitor");
+        assert_eq!(pick_monitor(a.clone(), &all, Some("A"), true).name, "B", "first other monitor");
+        assert_eq!(pick_monitor(b.clone(), &all, Some("B"), true), a, "the primary monitor is preferred");
+        assert_eq!(pick_monitor(a.clone(), &all, Some("A"), false), a, "option off: stays (and cannot be seen)");
+        assert_eq!(pick_monitor(a.clone(), std::slice::from_ref(&a), Some("A"), true), a, "one monitor: nowhere else to go");
     }
 
     #[test]

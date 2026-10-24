@@ -32,6 +32,9 @@ pub struct Inputs {
     pub supported: bool,
     pub active_game: Option<u32>,
     pub show_on_desktop: bool,
+    /// The settings window is showing the overlay's appearance and position: show it so
+    /// that changes can be seen where they happen.
+    pub settings_preview: bool,
 }
 
 impl VisibilityState {
@@ -43,6 +46,9 @@ impl VisibilityState {
         }
         if !i.supported {
             return (false, "hidden: overlay not supported in this session".into());
+        }
+        if i.settings_preview {
+            return (true, "shown: the settings window is editing its appearance or position".into());
         }
         match self.manual {
             Manual::Show => return (true, "shown manually (shortcut/tray)".into()),
@@ -102,7 +108,18 @@ mod tests {
     use crate::config::MetricEntry;
 
     fn inputs(game: Option<u32>, desktop: bool) -> Inputs {
-        Inputs { supported: true, active_game: game, show_on_desktop: desktop }
+        Inputs { supported: true, active_game: game, show_on_desktop: desktop, settings_preview: false }
+    }
+
+    #[test]
+    fn settings_preview_shows_even_when_hidden_manually() {
+        let mut v = VisibilityState::default();
+        v.set(false, None);
+        let (vis, reason) = v.decide(Inputs { settings_preview: true, ..inputs(None, false) });
+        assert!(vis);
+        assert!(reason.contains("settings"));
+        assert!(!v.decide(inputs(None, false)).0, "the manual choice applies again once the preview ends");
+        assert!(!v.decide(Inputs { supported: false, settings_preview: true, ..inputs(None, true) }).0, "never where unsupported");
     }
 
     #[test]
@@ -140,7 +157,7 @@ mod tests {
     fn unsupported_session_never_shows() {
         let mut v = VisibilityState::default();
         v.set(true, None);
-        let (vis, reason) = v.decide(Inputs { supported: false, active_game: None, show_on_desktop: true });
+        let (vis, reason) = v.decide(Inputs { supported: false, active_game: None, show_on_desktop: true, settings_preview: false });
         assert!(!vis);
         assert!(reason.contains("not supported"));
     }

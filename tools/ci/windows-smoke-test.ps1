@@ -130,6 +130,27 @@ $lost = $checks.Keys | Where-Object { -not $checks[$_] }
 if ($lost) { Fail "settings lost across restart: $lost" }
 if (-not $s.hotkey.registered) { Fail "saved shortcut not registered after restart: $($s.hotkey.error)" }
 Pass "settings persisted across restart (shortcut, interval, position, font, metric selection, manual games, startup)"
+
+# Exclusive fullscreen: Windows draws no other window over the game, so FreeHM must move the
+# overlay to another monitor or (one monitor, as on CI) report why it cannot be seen.
+$pl = Join-Path $Bin "examples\present_loop.exe"
+if (Test-Path $pl) {
+    $fs = Start-Process $pl -ArgumentList "12", "--fullscreen", "--native" -PassThru -RedirectStandardOutput "$Out\present-fullscreen.txt"
+    Start-Sleep -Seconds 2
+    $pw = [W]::FindWindow("FreeHM.PresentLoop", "FreeHM present loop")
+    if ([W]::GetForegroundWindow() -ne $pw) { [W]::Chord([byte[]](0x12)); [void][W]::SetForegroundWindow($pw) }
+    $s = $null
+    for ($i = 0; $i -lt 8; $i++) { Start-Sleep -Seconds 1; $s = Status; if ($s.overlay.warning -match "exclusive fullscreen") { break } }
+    $null = $fs.WaitForExit(20000)
+    $fsLog = Get-Content "$Out\present-fullscreen.txt" -Raw
+    if ($fsLog -notmatch "exclusive fullscreen: on") {
+        Write-Host "note: exclusive fullscreen is not available on this machine; check skipped:`n$fsLog"
+    } elseif ($s.overlay.warning -notmatch "exclusive fullscreen") {
+        Fail "exclusive fullscreen not reported (game: $($s.game.active.name), foreground: $($s.game.foreground.name), warning: $($s.overlay.warning)):`n$fsLog"
+    } else {
+        Pass "exclusive fullscreen reported: $($s.overlay.warning)"
+    }
+}
 & $exe --quit | Out-Null; $null = $app.WaitForExit(10000)
 if ($prevRun) { Set-ItemProperty $runKey -Name FreeHM -Value $prevRun }
 

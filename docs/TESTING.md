@@ -17,8 +17,8 @@ no game, virtual displays). "Local" means the developer PC:
 
 | Crate | Tests | Covers |
 |---|---|---|
-| freehm-core | 86 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, late or out-of-order events, bounded memory), game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
-| freehm | 10 on Windows, 19 on Linux (adds `/proc` probe and permission tests) | path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
+| freehm-core | 88 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, late or out-of-order events, bounded memory), game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
+| freehm | 11 on Windows, 20 on Linux (adds `/proc` probe and permission tests) | overlay placement and the monitor used during exclusive fullscreen, path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
 | freehm-helper | 4 | protocol, embedded PawnIO module hashes, request validation |
 
 The telemetry engine and overlay are also tested through the **mock provider**
@@ -42,6 +42,9 @@ The script starts the real application (with the mock provider) and checks it fr
 * `--quit` exits and leaves no window behind.
 * After a restart, the changed settings are all still there: shortcut, interval, position,
   font, metric selection, manual game list and startup.
+* A test presenter in exclusive fullscreen (`present_loop --fullscreen --native`): FreeHM
+  reports that the overlay cannot be seen there (the runner has one monitor). Skipped with a
+  note if the runner cannot enter exclusive fullscreen.
 
   *The settings and startup checks were added after the local run, so they have passed only in CI.*
 * With `-Helper` (elevated):
@@ -91,6 +94,8 @@ The CI job also builds the Inno Setup installer and checks it:
 | FPS on the real GPU (RTX 5070, 180 Hz) through the installed helper service | pass: 179.8–180.1 FPS vs. the presenter's own 179.7–180.1 |
 | Helper service CPU while serving FPS | 0.05 % of a core polled every 1 s, 0.10 % every 200 ms; 9.6 MB |
 | Startup to IPC ready | 130–150 ms |
+| Settings ▸ Overlay (2026-10-24): opening the page shows the real overlay; dragging the box on the position map moved the real overlay live (sampled every 250 ms along the drag) and saved a custom position (1275, 613); "Custom" starts from the current position | pass |
+| Exclusive fullscreen (2026-10-24), see below | overlay moved to the second monitor and drawn there; warning text correct with the option off |
 
 Bugs found by the settings hand-check (fixed in `a7af198`):
 * Status dots, the metric reorder arrows and the icon on "Repair helper" were drawn as
@@ -249,6 +254,40 @@ The engine also refuses to display values that cannot be right:
 
 Both are unit-tested.
 
+## Exclusive fullscreen (Windows)
+
+Measured on the RTX 5070 PC (Windows 11, two monitors) with the Direct3D 11 test presenter
+in exclusive fullscreen (`present_loop --fullscreen --native`: flip model,
+`SetFullscreenState(TRUE)` at the monitor's own resolution and 180 Hz). Visibility was
+judged from screen captures of the window's area, not from z-order (the overlay was above
+the game in z-order in every case).
+
+| Window over the game | Drawn? | Game |
+|---|---|---|
+| Click-through layered topmost window (FreeHM's kind; `UpdateLayeredWindow` or `SetLayeredWindowAttributes`) | no | keeps exclusive fullscreen, 179–180 FPS |
+| Layered topmost window that takes mouse input | yes | `Present` returns `DXGI_STATUS_OCCLUDED`, the game loses exclusive fullscreen |
+| Ordinary topmost window | yes | same: loses exclusive fullscreen |
+| On-Screen Keyboard (a UIAccess window) | yes | same: loses exclusive fullscreen |
+| Click-through layered window on the *other* monitor | yes | keeps exclusive fullscreen |
+
+`SHQueryUserNotificationState` reported `QUNS_RUNNING_D3D_FULL_SCREEN` (3) during exclusive
+fullscreen and `QUNS_BUSY` (2) otherwise. So without injecting into the game nothing can be
+drawn over it, and FreeHM now moves the overlay to another monitor while a game holds the
+overlay's monitor in exclusive fullscreen.
+
+End to end with the new build (a copy of the user's configuration):
+
+| Case | Result |
+|---|---|
+| Option on (default), two monitors | overlay moved from `\\.\DISPLAY1` to `\\.\DISPLAY2` and was drawn there; the presenter stayed exclusive at 179.8 FPS; status explained the move; after the game exited the overlay hid again (no game) |
+| Option off | overlay stayed on `DISPLAY1`, not drawn; status: "… uses exclusive fullscreen on \\.\DISPLAY1: Windows draws no other window over it, so the overlay cannot be seen there …" |
+
+StellarDrive (Unity 6, D3D11), set to exclusive fullscreen: its log reports
+`SetFullscreenState failed (887a0022)` and "reverting to FullscreenWindow" at start, both on
+the test run and on the run where the overlay was reported missing; it then runs borderless,
+where the overlay was drawn over it (verified by screen capture, 1 min). Exclusive mode in
+that game is only entered from its own menu, which was not driven by the test.
+
 ## Performance
 
 Measured with `tools/perf/measure.ps1`. Each state starts a fresh instance, lets it run for
@@ -281,8 +320,9 @@ been measured over a real game.
 
 These have **not** been verified. Treat them as unknown:
 
-* **Real games**: no real game has been run with FreeHM yet, so there is no FPS comparison against PresentMon or the NVIDIA overlay.
-* **Exclusive fullscreen**: warning detection is unit-tested, but has not been tried with a real exclusive-fullscreen game.
+* **More real games**: only one DXGI game (Geometry Dash) has been compared with PresentMon; D3D9, OpenGL and Vulkan games are untested.
+* **Exclusive fullscreen in a real game**: measured with the Direct3D 11 test presenter only (see "Exclusive fullscreen"). StellarDrive (Unity 6, D3D11) failed to enter exclusive mode at its start and fell back to borderless, where the overlay was visible.
+* **Exclusive fullscreen with one monitor**: the notification balloon was not seen on screen (the test PC has two monitors; CI checks the warning text).
 * **AMD and Intel GPUs**: the Windows WDDM path and the Linux amdgpu, i915 and xe paths have only run where there is no such GPU. AMD CPUs (PawnIO SMN module, `k10temp`) are untested too.
 * **Tray menus on Linux**: on a real desktop (KDE, GNOME with AppIndicator). On Windows the menu was checked as described above.
 * **Real Linux desktops**: the GlobalShortcuts portal on KDE or GNOME 48+, and the overlay on KDE, GNOME, Hyprland and others. CI covers only Xvfb and headless sway.

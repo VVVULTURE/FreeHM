@@ -372,7 +372,12 @@ pub fn overlay(app: &mut SettingsApp, ui: &mut egui::Ui) {
                         }
                     });
                 }
-                if ui.add_sized([100.0, 24.0], egui::Button::selectable(o.anchor == Anchor::Custom, "Custom")).clicked() {
+                if ui.add_sized([100.0, 24.0], egui::Button::selectable(o.anchor == Anchor::Custom, "Custom")).clicked() && o.anchor != Anchor::Custom {
+                    // Start from where the overlay is now instead of jumping elsewhere.
+                    if let Some((x, y)) = app.preview.logical_pos {
+                        o.offset_x = x.round();
+                        o.offset_y = y.round();
+                    }
                     o.anchor = Anchor::Custom;
                 }
             });
@@ -400,6 +405,14 @@ pub fn overlay(app: &mut SettingsApp, ui: &mut egui::Ui) {
     });
 
     if cfg!(windows) {
+        section(ui, "Exclusive fullscreen", |ui| {
+            ui.checkbox(&mut o.avoid_exclusive_fullscreen, "Show the overlay on another monitor while a game uses exclusive fullscreen");
+            hint(
+                ui,
+                "Windows draws no other window over a game in exclusive fullscreen, and FreeHM never injects code into games. \
+                 Borderless (windowed) fullscreen shows the overlay over the game; with one monitor, FreeHM tells you when it cannot be seen.",
+            );
+        });
         section(ui, "Screen capture", |ui| {
             ui.checkbox(&mut o.hide_from_capture, "Hide the overlay from screenshots and recordings");
             hint(ui, "Uses the Windows display-affinity setting. Some capture tools ignore it.");

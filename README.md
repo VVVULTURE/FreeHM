@@ -91,7 +91,9 @@ All changes apply immediately, with a live preview, and never need administrator
 * **Overlay**: font (bundled Exo 2, any installed font, or a font file), size, weight,
   colours, background and overall opacity, padding/spacing, stacked, grouped or single-line layout,
   compact labels, scale, monitor, corner presets or custom position, edge margins, and
-  "hide from screen capture" (Windows).
+  "hide from screen capture" (Windows). Drag the overlay on the position map to move it;
+  it snaps to the corners and edges. While this page is open the real overlay is shown, so
+  every change can be seen where it happens; changes are saved immediately.
 * **Metrics**: enable, reorder, rename and group each metric individually; optional
   "used / total".
 * **Hardware**: choose the CPU/GPU to monitor, see every sensor's state and provider.
@@ -126,9 +128,18 @@ as unavailable, with the reason in *Settings ▸ Hardware*.
 
 ## Known limitations
 
-* **Exclusive fullscreen (Windows):** an exclusive-fullscreen Direct3D game can draw
-  above every window, so the overlay may be hidden. FreeHM detects this and says so. Use
-  borderless/windowed fullscreen. FreeHM does not hook games to get around this.
+* **Exclusive fullscreen (Windows):** while a game uses exclusive fullscreen, Windows draws
+  no other window on that monitor. Click-through overlays like FreeHM's are left out, and any
+  other window drawn over the game takes it out of exclusive mode. Only overlays that inject
+  code into the game (Steam, RTSS, Discord) or the GPU driver's own overlay can draw there,
+  and FreeHM never injects. So FreeHM:
+  * shows the overlay on another monitor while that lasts (*Settings ▸ Overlay ▸ Exclusive
+    fullscreen*, on by default), and moves it back when the game leaves exclusive mode;
+  * with one monitor, shows a notification and a warning in Settings explaining why the
+    overlay cannot be seen.
+
+  Switch the game to borderless (windowed) fullscreen to see the overlay over the game. On
+  Windows 10/11 this normally performs the same.
 * **FPS on Linux:** no system-wide, non-invasive frame-timing interface exists. Tools that
   show FPS on Linux (MangoHud and similar) load a layer into the game. FreeHM doesn't, so
   FPS and frame time show "unavailable" with that reason.
@@ -151,7 +162,8 @@ as unavailable, with the reason in *Settings ▸ Hardware*.
 
 * **Overlay doesn't appear in a game:** *Settings ▸ Game detection ▸ Right now* shows how
   the game was classified. Add it to the manual list if needed. Check for an
-  exclusive-fullscreen warning on the General page.
+  exclusive-fullscreen warning on the General page; if the game uses exclusive fullscreen,
+  switch it to borderless (windowed) fullscreen.
 * **Shortcut doesn't work:** *Settings ▸ Shortcuts* shows whether registration succeeded
   and why not. Pick another combination if another program owns it.
 * **A metric says N/A:** *Settings ▸ Hardware* lists the reason, for example "PawnIO is not

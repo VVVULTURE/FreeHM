@@ -81,6 +81,24 @@ impl Tray {
         }
     }
 
+    /// Show a notification balloon/toast from the icon. Windows holds it back while a
+    /// fullscreen program is in front and shows it (or files it) afterwards.
+    pub fn notify(&self, title: &str, text: &str) {
+        if !self.added {
+            return;
+        }
+        let mut d = self.data();
+        d.uFlags = NIF_INFO;
+        d.dwInfoFlags = NIIF_INFO;
+        let t: Vec<u16> = title.encode_utf16().take(63).collect();
+        d.szInfoTitle[..t.len()].copy_from_slice(&t);
+        let b: Vec<u16> = text.encode_utf16().take(255).collect();
+        d.szInfo[..b.len()].copy_from_slice(&b);
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
+        }
+    }
+
     pub fn remove(&mut self) {
         if self.added {
             let d = self.data();

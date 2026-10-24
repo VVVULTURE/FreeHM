@@ -19,6 +19,11 @@ pub enum Request {
     /// next few seconds (the settings window refreshes this while it is open).
     GetStatus {
         live: bool,
+        /// Also show the overlay for the next few seconds even where it would be hidden, so
+        /// that appearance and position changes can be seen on screen (the settings window
+        /// sends this while its Overlay page is open). `false` ends such a preview.
+        #[serde(default)]
+        show_overlay: bool,
     },
     /// Validate, apply immediately and persist a new configuration.
     ApplyConfig(Box<Config>),
@@ -146,13 +151,24 @@ mod tests {
 
     #[test]
     fn requests_round_trip() {
-        for req in
-            [Request::Hello { version: 1 }, Request::GetStatus { live: true }, Request::ApplyConfig(Box::default()), Request::ToggleOverlay, Request::Quit]
-        {
+        for req in [
+            Request::Hello { version: 1 },
+            Request::GetStatus { live: true, show_overlay: true },
+            Request::ApplyConfig(Box::default()),
+            Request::ToggleOverlay,
+            Request::Quit,
+        ] {
             let mut buf = Vec::new();
             write_frame(&mut buf, &req, MAX_FRAME).unwrap();
             let back: Request = read_frame(&mut std::io::Cursor::new(buf), MAX_FRAME).unwrap();
             assert_eq!(back, req);
         }
+    }
+
+    #[test]
+    fn status_request_without_show_overlay_still_parses() {
+        // Scripts and older settings windows send only `live`.
+        let r: Request = serde_json::from_str(r#"{"GetStatus":{"live":true}}"#).unwrap();
+        assert_eq!(r, Request::GetStatus { live: true, show_overlay: false });
     }
 }

@@ -141,6 +141,9 @@ pub struct OverlayConfig {
     pub show_on_desktop: bool,
     /// Windows: ask DWM to exclude the overlay from screenshots/recordings.
     pub hide_from_capture: bool,
+    /// Windows draws nothing over a game in exclusive fullscreen; while a game holds its
+    /// monitor that way, show the overlay on another monitor (when there is one).
+    pub avoid_exclusive_fullscreen: bool,
 }
 
 impl Default for OverlayConfig {
@@ -171,6 +174,7 @@ impl Default for OverlayConfig {
             offset_y: 100.0,
             show_on_desktop: false,
             hide_from_capture: false,
+            avoid_exclusive_fullscreen: true,
         }
     }
 }

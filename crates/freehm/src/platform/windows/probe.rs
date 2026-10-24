@@ -4,7 +4,7 @@
 //! access. Game library locations come from the launchers' own local files and registry
 //! entries; nothing is fetched from the network.
 
-use super::util::{OwnedHandle, from_wide, reg_string, reg_subkeys};
+use super::util::{OwnedHandle, class_name, from_wide, reg_string, reg_subkeys};
 use crate::detect::{Foreground, GameProbe};
 use freehm_core::gamedetect::{LibraryRoot, ProcessInfo, file_name, parse_epic_manifest, parse_steam_libraryfolders};
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PR
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use windows::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
 use windows::Win32::UI::Shell::{QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState};
-use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId};
 use windows::core::PWSTR;
 
 #[derive(Default)]
@@ -67,12 +67,6 @@ fn covers_monitor(hwnd: HWND) -> bool {
         let m = mi.rcMonitor;
         r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
     }
-}
-
-fn class_name(hwnd: HWND) -> String {
-    let mut buf = [0u16; 128];
-    let n = unsafe { GetClassNameW(hwnd, &mut buf) };
-    from_wide(&buf[..n.max(0) as usize])
 }
 
 impl GameProbe for WinProbe {
@@ -137,16 +131,26 @@ impl GameProbe for WinProbe {
     fn library_roots(&mut self) -> Vec<LibraryRoot> {
         discover_library_roots()
     }
+}
 
-    fn display_warning(&mut self) -> Option<String> {
-        match unsafe { SHQueryUserNotificationState() } {
-            Ok(s) if s == QUNS_RUNNING_D3D_FULL_SCREEN => Some(
-                "An exclusive-fullscreen Direct3D application is running. Windows may draw it above all other windows, \
-                 so the overlay can be hidden. Switch the game to borderless/windowed fullscreen if the overlay is not visible."
-                    .into(),
-            ),
-            _ => None,
+/// The monitor (device name) of the foreground window while a Direct3D program holds
+/// exclusive fullscreen. Windows draws nothing else on that monitor then: click-through
+/// layered windows such as the overlay are left out, and any other window drawn over the
+/// game takes it out of exclusive mode. Other monitors are unaffected.
+pub fn exclusive_fullscreen_monitor() -> Option<String> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFOEXW, MonitorFromWindow};
+    unsafe {
+        if SHQueryUserNotificationState().ok()? != QUNS_RUNNING_D3D_FULL_SCREEN {
+            return None;
         }
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFOEXW::default();
+        mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        GetMonitorInfoW(mon, &mut mi.monitorInfo).as_bool().then(|| from_wide(&mi.szDevice))
     }
 }
 

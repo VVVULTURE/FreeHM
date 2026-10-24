@@ -1,9 +1,10 @@
 //! Live preview: the overlay rendered by the same renderer and layout code the background
-//! app uses, plus a map of where it sits on the selected monitor.
+//! app uses, plus a map of where it sits on the selected monitor. The overlay can be dragged
+//! on the map; it snaps to the corner and edge positions.
 
 use crate::app::compute_placement;
 use eframe::egui;
-use freehm_core::config::{Config, FontChoice, FontWeight, MonitorChoice};
+use freehm_core::config::{Anchor, Config, FontChoice, FontWeight, MonitorChoice};
 use freehm_core::ipc::MonitorInfo;
 use freehm_core::metrics::Snapshot;
 use freehm_core::render::{Renderer, Row, Style, build_rows};
@@ -21,6 +22,13 @@ pub struct Preview {
     demo_snap: Snapshot,
     demo_at: Option<Instant>,
     pub light_backdrop: bool,
+    /// Where on the overlay box the pointer grabbed it (map units), while dragging.
+    grab: Option<egui::Vec2>,
+    /// The overlay's current top-left corner relative to its monitor, in logical pixels
+    /// (what a custom position stores).
+    pub logical_pos: Option<(f32, f32)>,
+    /// When the overlay was last moved on the map.
+    pub moved_at: Option<Instant>,
 }
 
 impl Preview {
@@ -38,6 +46,9 @@ impl Preview {
             demo_snap: Snapshot::default(),
             demo_at: None,
             light_backdrop: false,
+            grab: None,
+            logical_pos: None,
+            moved_at: None,
         }
     }
 
@@ -50,7 +61,7 @@ impl Preview {
         &self.demo_snap
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, cfg: &Config, live: Option<&Snapshot>, monitors: &[MonitorInfo]) {
+    pub fn show(&mut self, ui: &mut egui::Ui, cfg: &mut Config, live: Option<&Snapshot>, monitors: &[MonitorInfo]) {
         let want_font = (cfg.overlay.font.clone(), cfg.overlay.font_weight);
         if want_font != self.font {
             let (r, note) = Renderer::new(&want_font.0, want_font.1);
@@ -133,18 +144,71 @@ impl Preview {
         .unwrap_or(MonitorInfo { name: "Example 1920×1080".into(), primary: true, x: 0, y: 0, width: 1920, height: 1080, scale: 1.0 });
         // The overlay at the monitor's own scale (it may differ from this window's).
         let (ow, oh) = (self.tex_px.0 as f32 / ppp * mon.scale, self.tex_px.1 as f32 / ppp * mon.scale);
-        let place = compute_placement(&mon, cfg, ow.round() as u32, oh.round() as u32);
+        let (owp, ohp) = (ow.round() as u32, oh.round() as u32);
         let map_w = ui.available_width().min(300.0);
         let k = map_w / mon.width.max(1) as f32;
-        let (mrect, _) = ui.allocate_exact_size(egui::vec2(map_w, mon.height as f32 * k), egui::Sense::hover());
+        let (mrect, resp) = ui.allocate_exact_size(egui::vec2(map_w, mon.height as f32 * k), egui::Sense::click_and_drag());
+        let box_at = |cfg: &Config| {
+            let place = compute_placement(&mon, cfg, owp, ohp);
+            egui::Rect::from_min_size(
+                mrect.min + egui::vec2((place.x - mon.x) as f32 * k, (place.y - mon.y) as f32 * k),
+                egui::vec2((ow * k).max(3.0), (oh * k).max(3.0)),
+            )
+        };
+        let mut o = box_at(cfg);
+
+        // Drag the box (or click anywhere on the map) to move the overlay there.
+        if resp.drag_started() {
+            let at = resp.interact_pointer_pos().unwrap_or(o.center());
+            self.grab = Some(if o.expand(4.0).contains(at) { at - o.min } else { o.size() / 2.0 });
+        }
+        if (resp.dragged() || resp.clicked())
+            && let Some(at) = resp.interact_pointer_pos()
+        {
+            let grab = self.grab.unwrap_or(o.size() / 2.0);
+            let tl = at - grab - mrect.min;
+            // Monitor pixels, kept on the monitor.
+            let x = (tl.x / k).clamp(0.0, (mon.width as f32 - ow).max(0.0));
+            let y = (tl.y / k).clamp(0.0, (mon.height as f32 - oh).max(0.0));
+            let dragged = egui::pos2(mrect.min.x + x * k, mrect.min.y + y * k);
+            // Snap to a corner or edge position (with the configured margins) when close.
+            let anchors = [Anchor::TopLeft, Anchor::TopCenter, Anchor::TopRight, Anchor::BottomLeft, Anchor::BottomCenter, Anchor::BottomRight];
+            let near = anchors.into_iter().find(|&a| {
+                let mut c = cfg.clone();
+                c.overlay.anchor = a;
+                box_at(&c).min.distance(dragged) <= 8.0
+            });
+            match near {
+                Some(a) => cfg.overlay.anchor = a,
+                None => {
+                    cfg.overlay.anchor = Anchor::Custom;
+                    cfg.overlay.offset_x = (x / mon.scale).round();
+                    cfg.overlay.offset_y = (y / mon.scale).round();
+                }
+            }
+            o = box_at(cfg);
+            self.moved_at = Some(Instant::now());
+        }
+        if resp.drag_stopped() {
+            self.grab = None;
+        }
+        let hovered = resp.hover_pos().is_some_and(|h| o.expand(4.0).contains(h));
+        if resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+
         let p = ui.painter_at(mrect);
         p.rect_filled(mrect, 3.0, egui::Color32::from_gray(40));
         p.rect_stroke(mrect, 3.0, egui::Stroke::new(1.0, egui::Color32::from_gray(90)), egui::StrokeKind::Inside);
-        let o = egui::Rect::from_min_size(
-            mrect.min + egui::vec2((place.x - mon.x) as f32 * k, (place.y - mon.y) as f32 * k),
-            egui::vec2((ow * k).max(3.0), (oh * k).max(3.0)),
-        );
         p.rect_filled(o, 1.0, egui::Color32::from_rgb(118, 185, 0));
+        if resp.dragged() || hovered {
+            p.rect_stroke(o, 1.0, egui::Stroke::new(1.5, egui::Color32::WHITE), egui::StrokeKind::Outside);
+        }
+        let place = compute_placement(&mon, cfg, owp, ohp);
+        self.logical_pos = Some(((place.x - mon.x) as f32 / mon.scale, (place.y - mon.y) as f32 / mon.scale));
         ui.weak(format!("{} — {}×{} at {:.0} % scale", mon.name, mon.width, mon.height, mon.scale * 100.0));
+        ui.weak("Drag the green box to move the overlay; it snaps to the corners and edges.");
     }
 }

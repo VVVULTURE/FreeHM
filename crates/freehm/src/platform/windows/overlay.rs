@@ -4,7 +4,9 @@
 //!   alpha, composed by DWM; nothing is drawn unless the content changes.
 //! - `WS_EX_TRANSPARENT` (plus `HTTRANSPARENT` hit-testing): mouse input passes through.
 //! - `WS_EX_NOACTIVATE` + `SW_SHOWNOACTIVATE`: never takes keyboard focus from the game.
-//! - `WS_EX_TOPMOST`, re-asserted when the foreground window changes.
+//! - `WS_EX_TOPMOST`, re-asserted when the foreground window changes and whenever another
+//!   window has been put above it (a game entering exclusive fullscreen does that without
+//!   changing the foreground window).
 //! - `WS_EX_TOOLWINDOW`: no taskbar button or Alt+Tab entry.
 //!
 //! It is not injected into, attached to, or parented by any game window.
@@ -30,6 +32,9 @@ pub struct Overlay {
     bmp_h: u32,
     shown: bool,
     last_pos: (i32, i32),
+    last_raise: std::time::Instant,
+    /// The window that last covered the overlay (logged once per window).
+    covered_by: Option<isize>,
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -86,6 +91,8 @@ impl Overlay {
                 bmp_h: 0,
                 shown: false,
                 last_pos: (i32::MIN, i32::MIN),
+                last_raise: std::time::Instant::now(),
+                covered_by: None,
             })
         }
     }
@@ -151,8 +158,62 @@ impl Overlay {
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
                 self.shown = true;
                 self.raise();
+            } else {
+                self.raise_if_covered();
             }
             self.last_pos = (place.x, place.y);
+        }
+    }
+
+    /// The first visible window above the overlay that overlaps it, if any.
+    ///
+    /// A game switching to exclusive fullscreen makes its own window topmost without the
+    /// foreground window changing, which leaves the overlay behind it; so do other windows
+    /// made topmost later. Walking the windows above ours is a few microseconds.
+    fn covering_window(&self) -> Option<HWND> {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+        unsafe {
+            let mut ours = RECT::default();
+            GetWindowRect(self.hwnd, &mut ours).ok()?;
+            let mut h = GetWindow(self.hwnd, GW_HWNDPREV).ok();
+            // Bounded: the topmost band rarely holds more than a few dozen windows.
+            for _ in 0..256 {
+                let w = h.filter(|w| !w.is_invalid())?;
+                if IsWindowVisible(w).as_bool() {
+                    let mut cloaked = 0u32;
+                    let _ = DwmGetWindowAttribute(w, DWMWA_CLOAKED, (&mut cloaked as *mut u32).cast(), 4);
+                    let mut r = RECT::default();
+                    if cloaked == 0
+                        && GetWindowRect(w, &mut r).is_ok()
+                        && r.left < ours.right
+                        && ours.left < r.right
+                        && r.top < ours.bottom
+                        && ours.top < r.bottom
+                    {
+                        return Some(w);
+                    }
+                }
+                h = GetWindow(w, GW_HWNDPREV).ok();
+            }
+            None
+        }
+    }
+
+    /// Raise the overlay if another window has been put above it, at most a few times a
+    /// second so that two programs that both insist on being on top do not fight at the
+    /// overlay's refresh rate.
+    pub fn raise_if_covered(&mut self) {
+        if !self.shown || self.last_raise.elapsed() < std::time::Duration::from_millis(250) {
+            return;
+        }
+        if let Some(w) = self.covering_window() {
+            self.last_raise = std::time::Instant::now();
+            if self.covered_by != Some(w.0 as isize) {
+                self.covered_by = Some(w.0 as isize);
+                log::debug!("overlay covered by window class {:?}; raising it", super::util::class_name(w));
+            }
+            self.raise();
         }
     }
 

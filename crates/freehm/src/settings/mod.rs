@@ -68,6 +68,9 @@ struct Shared {
     error: Option<String>,
     /// Set when the configuration was saved to the file directly (app not running).
     saved_offline: bool,
+    /// Ask the app to show the overlay while the Overlay page is open, so position and
+    /// appearance changes can be seen on screen.
+    show_overlay: bool,
 }
 
 fn connect() -> std::io::Result<Client> {
@@ -165,7 +168,8 @@ fn worker(shared: Arc<Mutex<Shared>>, rx: mpsc::Receiver<Cmd>, mut client: Optio
         if Instant::now() >= next_poll {
             next_poll = Instant::now() + Duration::from_millis(500);
             if let Some(c) = client.as_mut() {
-                match c.call(&Request::GetStatus { live: true }) {
+                let show_overlay = shared.lock().unwrap().show_overlay;
+                match c.call(&Request::GetStatus { live: true, show_overlay }) {
                     Ok(Response::Status(st)) => store_status(&shared, st, done_seq),
                     Ok(_) => {}
                     Err(e) => {
@@ -218,7 +222,7 @@ impl SettingsApp {
         // Connect synchronously first so the window opens with the live configuration
         // instead of flashing file contents.
         let client = match connect() {
-            Ok(mut c) => match c.call(&Request::GetStatus { live: true }) {
+            Ok(mut c) => match c.call(&Request::GetStatus { live: true, show_overlay: false }) {
                 Ok(Response::Status(st)) => {
                     store_status(&shared, st, 0);
                     Some(c)
@@ -416,7 +420,7 @@ impl eframe::App for SettingsApp {
                 ui.heading("Preview");
                 let monitors = self.status.as_ref().map(|s| s.monitors.clone()).unwrap_or_default();
                 let snap = self.status.as_ref().map(|s| &s.snapshot);
-                self.preview.show(ui, &self.draft, snap, &monitors);
+                self.preview.show(ui, &mut self.draft, snap, &monitors);
             });
         }
 
@@ -441,6 +445,20 @@ impl eframe::App for SettingsApp {
 
         if let Some(p) = self.page_request.take() {
             self.page = p;
+        }
+        // The real overlay is shown while its appearance and position are being edited:
+        // on the Overlay page, and for a few seconds after it is moved on any page's map.
+        let moved = self.preview.moved_at.is_some_and(|t| t.elapsed() < Duration::from_secs(4));
+        if moved {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
+        let show_overlay = self.page == Page::Overlay || moved;
+        let changed = {
+            let mut s = self.shared.lock().unwrap();
+            std::mem::replace(&mut s.show_overlay, show_overlay) != show_overlay
+        };
+        if changed {
+            self.send(Request::GetStatus { live: true, show_overlay });
         }
         self.flush_edits(&ctx);
     }

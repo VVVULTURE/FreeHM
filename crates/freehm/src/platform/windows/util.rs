@@ -103,3 +103,9 @@ impl Drop for OwnedHandle {
 }
 
 unsafe impl Send for OwnedHandle {}
+
+pub fn class_name(hwnd: windows::Win32::Foundation::HWND) -> String {
+    let mut buf = [0u16; 128];
+    let n = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
+    from_wide(&buf[..n.max(0) as usize])
+}

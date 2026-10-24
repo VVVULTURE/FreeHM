@@ -33,7 +33,8 @@ The full comparison of the alternatives considered is in [ARCHITECTURE.md](ARCHI
 * **Overlay:** transparent, topmost and click-through.
   * Fully configurable appearance: layout, colours, font (Exo 2 bundled), size, anchor or offset, monitor.
   * The settings window shows a live preview.
-  * Warns about exclusive fullscreen.
+  * Exclusive fullscreen: the overlay moves to another monitor, or FreeHM explains why it cannot be seen.
+  * Position can be dragged on a map in Settings; the real overlay follows live and the position is saved.
 * **Shortcut:** Ctrl+Shift+O by default, configurable, with conflict reporting.
 * **Game detection:** launcher-aware (Steam, Epic, GOG, EA, Ubisoft, Battle.net, Xbox; Heroic, Lutris, itch on Linux).
   * Manual, excluded and "selected games only" lists.
@@ -101,7 +102,7 @@ It is redrawn only when a displayed value changes.
 
 * **Windows:** a layered window (`UpdateLayeredWindow`) with `WS_EX_LAYERED | TRANSPARENT | TOPMOST | TOOLWINDOW | NOACTIVATE`.
   * It can optionally be excluded from screen capture.
-  * Exclusive-fullscreen games can cover it; FreeHM detects this and says so.
+  * Windows draws nothing over an exclusive-fullscreen game (measured, see TESTING.md). FreeHM moves the overlay to another monitor meanwhile, or says why it cannot be seen.
 * **X11:** an override-redirect 32-bit ARGB window with an empty XShape input region, which makes it click-through.
   * It is opaque without a compositor, and the status says so.
 * **Wayland:** a `wlr-layer-shell` surface on the Overlay layer with an empty input region and no keyboard focus.
@@ -192,7 +193,7 @@ Built by CI run 39697763172 and downloaded:
 
 * **Limitations:**
   * No FPS on Linux.
-  * Exclusive fullscreen can hide the overlay on Windows.
+  * Exclusive fullscreen on Windows: the overlay cannot be drawn over the game without injecting into it (FreeHM moves it to another monitor or explains).
   * Non-NVIDIA GPU power on Windows is unavailable.
   * Wayland needs layer-shell, otherwise XWayland is used.
   * Global shortcuts on Wayland need the GlobalShortcuts portal.
@@ -200,7 +201,7 @@ Built by CI run 39697763172 and downloaded:
   * Anti-cheat compatibility is unknown.
 * **Not tested:**
   * Games beyond one DXGI title (Geometry Dash); D3D9, OpenGL and Vulkan games.
-  * Real exclusive fullscreen.
+  * Exclusive fullscreen in a real game: StellarDrive's switch to exclusive mode failed at its start (the game fell back to borderless by itself), so exclusive mode was measured with the Direct3D 11 test presenter only.
   * AMD/Intel GPUs and AMD CPUs.
   * The tray menu on a real Linux desktop. On Windows every item was checked, with the menu opened by its callback message (see TESTING.md).
   * Real Linux desktops: KDE, GNOME, Hyprland, the portal, the tray.
@@ -212,6 +213,6 @@ Built by CI run 39697763172 and downloaded:
 
 Releases: `release.yml` publishes Windows and Linux builds when a `vX.Y.Z` tag is pushed (see README).
 
-1. **Compare more games with PresentMon**: D3D9, OpenGL and Vulkan titles, plus exclusive fullscreen.
+1. **Compare more games with PresentMon**: D3D9, OpenGL and Vulkan titles.
 2. **Run the Linux build on a real desktop** (KDE and GNOME): tray, portal shortcut, overlay over a fullscreen game, `--setup-permissions`.
 3. **Recommendation:** test on AMD and Intel GPUs before claiming support for them.
