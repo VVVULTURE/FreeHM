@@ -14,6 +14,8 @@
 use super::util::wide;
 use crate::app::Placement;
 use freehm_core::render::Pixmap;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -21,6 +23,19 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::PCWSTR;
 
 pub const CLASS: &str = "FreeHM.Overlay";
+
+/// A monitor's permanent device path and the name it gives itself.
+type MonitorNames = HashMap<String, (String, String)>;
+
+thread_local! {
+    /// Monitor names and the outputs they were read for. The list of monitors is re-read every
+    /// few seconds, also during games; this asks the display driver only when it changed.
+    static NAMES: RefCell<Option<(Vec<String>, MonitorNames)>> = const { RefCell::new(None) };
+}
+
+pub fn forget_monitor_names() {
+    NAMES.with(|n| n.borrow_mut().take());
+}
 
 pub struct Overlay {
     hwnd: HWND,
@@ -256,6 +271,51 @@ impl Drop for Overlay {
     }
 }
 
+/// By output (`\\\\.\\DISPLAY1`): each active monitor's device path and name.
+fn read_monitor_names() -> MonitorNames {
+    use windows::Win32::Devices::Display::*;
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    let mut names = MonitorNames::new();
+    let (mut n_paths, mut n_modes) = (0u32, 0u32);
+    unsafe {
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut n_paths, &mut n_modes) != ERROR_SUCCESS {
+            return names;
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); n_paths as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); n_modes as usize];
+        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut n_paths, paths.as_mut_ptr(), &mut n_modes, modes.as_mut_ptr(), None) != ERROR_SUCCESS {
+            return names;
+        }
+        for path in &paths[..n_paths as usize] {
+            let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            source.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            source.header.size = std::mem::size_of_val(&source) as u32;
+            source.header.adapterId = path.sourceInfo.adapterId;
+            source.header.id = path.sourceInfo.id;
+            let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            target.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            target.header.size = std::mem::size_of_val(&target) as u32;
+            target.header.adapterId = path.targetInfo.adapterId;
+            target.header.id = path.targetInfo.id;
+            if DisplayConfigGetDeviceInfo(&mut source.header) != 0 || DisplayConfigGetDeviceInfo(&mut target.header) != 0 {
+                continue;
+            }
+            let mut label = super::util::from_wide(&target.monitorFriendlyDeviceName);
+            let built_in = [
+                DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL,
+                DISPLAYCONFIG_OUTPUT_TECHNOLOGY_LVDS,
+                DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED,
+                DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED,
+            ];
+            if label.is_empty() && built_in.contains(&target.outputTechnology) {
+                label = "Built-in display".into();
+            }
+            names.insert(super::util::from_wide(&source.viewGdiDeviceName), (super::util::from_wide(&target.monitorDevicePath), label));
+        }
+    }
+    names
+}
+
 /// Enumerate monitors with physical bounds and effective DPI scale.
 pub fn monitors() -> Vec<freehm_core::ipc::MonitorInfo> {
     use windows::Win32::Foundation::RECT;
@@ -282,6 +342,8 @@ pub fn monitors() -> Vec<freehm_core::ipc::MonitorInfo> {
         let r = mi.monitorInfo.rcMonitor;
         out.push(freehm_core::ipc::MonitorInfo {
             name: super::util::from_wide(&mi.szDevice),
+            id: String::new(),
+            label: String::new(),
             primary: mi.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
             x: r.left,
             y: r.top,
@@ -290,5 +352,20 @@ pub fn monitors() -> Vec<freehm_core::ipc::MonitorInfo> {
             scale: dx as f32 / 96.0,
         });
     }
+    let outputs: Vec<String> = out.iter().map(|m| m.name.clone()).collect();
+    NAMES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let names = match cache.take() {
+            Some((seen, names)) if seen == outputs => names,
+            _ => read_monitor_names(),
+        };
+        for m in &mut out {
+            if let Some((id, label)) = names.get(&m.name) {
+                m.id = id.clone();
+                m.label = label.clone();
+            }
+        }
+        *cache = Some((outputs, names));
+    });
     out
 }

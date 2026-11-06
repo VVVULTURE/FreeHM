@@ -5,14 +5,14 @@ use eframe::egui;
 use freehm_core::config::*;
 use freehm_core::format::format_reading;
 use freehm_core::hotkey::Hotkey;
-use freehm_core::ipc::{GameInfo, Request};
+use freehm_core::ipc::{GameInfo, Request, UpdateMethod, UpdatePhase, find_monitor};
 use freehm_core::metrics::{DEVICE_GAME, DEVICE_MEMORY, DeviceKind, Freshness, MetricId, Reading, Snapshot};
 use std::time::Instant;
 
 static OFL_TEXT: &str = include_str!("../../../../assets/fonts/OFL-Exo2.txt");
 static NOTICES: &str = include_str!("../../../../THIRD_PARTY_NOTICES.md");
 
-const GREEN: egui::Color32 = egui::Color32::from_rgb(118, 185, 0);
+pub const GREEN: egui::Color32 = egui::Color32::from_rgb(118, 185, 0);
 
 #[derive(Default)]
 pub struct UiState {
@@ -345,19 +345,20 @@ pub fn overlay(app: &mut SettingsApp, ui: &mut egui::Ui) {
             ui.label("Monitor");
             let sel = match &o.monitor {
                 MonitorChoice::Primary => "Primary monitor".to_string(),
-                MonitorChoice::Named(n) => {
-                    if monitors.iter().any(|m| &m.name == n) {
-                        n.clone()
-                    } else {
-                        format!("{n} (not connected — using primary)")
-                    }
-                }
+                MonitorChoice::Named(n) => match find_monitor(&monitors, n, &o.monitor_label) {
+                    Some(m) => m.title(&monitors),
+                    None => format!("{} (not connected — using primary)", if o.monitor_label.is_empty() { n } else { &o.monitor_label }),
+                },
             };
-            egui::ComboBox::from_id_salt("monitor").selected_text(sel).width(260.0).show_ui(ui, |ui| {
-                ui.selectable_value(&mut o.monitor, MonitorChoice::Primary, "Primary monitor");
+            egui::ComboBox::from_id_salt("monitor").selected_text(sel).width(300.0).show_ui(ui, |ui| {
+                if ui.selectable_value(&mut o.monitor, MonitorChoice::Primary, "Primary monitor").clicked() {
+                    o.monitor_label.clear();
+                }
                 for m in &monitors {
-                    let text = format!("{} — {}×{}{}", m.name, m.width, m.height, if m.primary { " (primary)" } else { "" });
-                    ui.selectable_value(&mut o.monitor, MonitorChoice::Named(m.name.clone()), text);
+                    let choice = MonitorChoice::Named(m.stored_id().to_string());
+                    if ui.selectable_value(&mut o.monitor, choice, m.title(&monitors)).on_hover_text(&m.name).clicked() {
+                        o.monitor_label = m.label.clone();
+                    }
                 }
             });
             ui.end_row();
@@ -995,12 +996,44 @@ fn diagnostics_text(app: &SettingsApp) -> String {
     s
 }
 
+fn updates(app: &mut SettingsApp, ui: &mut egui::Ui) {
+    let u = app.status.as_ref().map(|s| s.update.clone()).unwrap_or_default();
+    let found = u.latest.clone().unwrap_or_default();
+    ui.label(match u.phase {
+        UpdatePhase::NotChecked => "Not checked yet.".to_string(),
+        UpdatePhase::Checking => "Asking GitHub…".to_string(),
+        UpdatePhase::UpToDate => format!("FreeHM {} is the latest version.", freehm_core::APP_VERSION),
+        UpdatePhase::CheckFailed => "The check did not finish. FreeHM works the same without it.".to_string(),
+        _ => format!("FreeHM {found} is available."),
+    });
+    if let Some(m) = &u.message {
+        ui.colored_label(ui.visuals().warn_fg_color, m);
+    }
+    let idle = !matches!(u.phase, UpdatePhase::Checking | UpdatePhase::Downloading | UpdatePhase::WaitingForGame | UpdatePhase::Installing);
+    if ui.add_enabled(app.connected && idle, egui::Button::new("Check for updates")).clicked() {
+        app.send(Request::CheckForUpdate);
+    }
+    ui.checkbox(&mut app.draft.general.check_for_updates, "Check for updates when FreeHM starts");
+    hint(
+        ui,
+        match u.method {
+            UpdateMethod::Installer => {
+                "FreeHM asks GitHub for the latest release. It tells you when there is a new one, and installs it only after you click Install, never during a game."
+            }
+            UpdateMethod::AppImage => {
+                "FreeHM asks GitHub for the latest release, and this AppImage replaces itself when there is a new one, never during a game."
+            }
+            UpdateMethod::Manual => "FreeHM asks GitHub for the latest release, and shows a notification with a link when there is a new one.",
+        },
+    );
+}
+
 pub fn about(app: &mut SettingsApp, ui: &mut egui::Ui) {
     section(ui, "FreeHM", |ui| {
         ui.label(format!("Version {}", freehm_core::APP_VERSION));
         ui.label("Free, open-source hardware statistics overlay. MIT License.");
         ui.hyperlink_to("github.com/VVVULTURE/FreeHM", "https://github.com/VVVULTURE/FreeHM");
-        hint(ui, "FreeHM never connects to the network, has no account and sends no telemetry.");
+        hint(ui, "FreeHM has no account and sends no telemetry. It uses the network only to look for and download its own updates (see below).");
         ui.horizontal(|ui| {
             if app.connected {
                 if ui.button("Quit FreeHM").on_hover_text("Stops monitoring and removes the tray icon").clicked() {
@@ -1011,6 +1044,8 @@ pub fn about(app: &mut SettingsApp, ui: &mut egui::Ui) {
             }
         });
     });
+
+    section(ui, "Updates", |ui| updates(app, ui));
 
     section(ui, "Diagnostics", |ui| {
         if let Some(st) = app.status.clone() {
@@ -1032,7 +1067,13 @@ pub fn about(app: &mut SettingsApp, ui: &mut egui::Ui) {
                 });
                 ui.end_row();
                 ui.label("Monitors");
-                ui.label(st.monitors.iter().map(|m| format!("{} {}×{} @{:.0}%", m.name, m.width, m.height, m.scale * 100.0)).collect::<Vec<_>>().join(", "));
+                ui.label(
+                    st.monitors
+                        .iter()
+                        .map(|m| format!("{} ({}) {}×{} @{:.0}%", m.display_name(), m.name, m.width, m.height, m.scale * 100.0))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
                 ui.end_row();
             });
             for n in &st.notes {

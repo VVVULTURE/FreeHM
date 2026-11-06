@@ -14,7 +14,7 @@ mod preview;
 use crate::fonts::SystemFonts;
 use crate::ipc::Client;
 use freehm_core::config::{Config, PermissionState};
-use freehm_core::ipc::{PROTOCOL_VERSION, Request, Response, Status};
+use freehm_core::ipc::{PROTOCOL_VERSION, Request, Response, Status, UpdateMethod, UpdatePhase};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -376,6 +376,49 @@ impl SettingsApp {
                 self.ui.last_error = None;
             }
         }
+        self.update_banner(ui);
+    }
+
+    /// Shown on every page while there is a newer version.
+    fn update_banner(&mut self, ui: &mut egui::Ui) {
+        let Some(st) = self.status.clone().filter(|_| self.connected) else { return };
+        let u = &st.update;
+        let Some(version) = u.latest.as_deref() else { return };
+        if !matches!(u.phase, UpdatePhase::Available | UpdatePhase::Downloading | UpdatePhase::WaitingForGame | UpdatePhase::Installing) {
+            return;
+        }
+        egui::Frame::group(ui.style()).fill(pages::GREEN.gamma_multiply(0.15)).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                match u.phase {
+                    UpdatePhase::Available => {
+                        ui.label(egui::RichText::new(format!("FreeHM {version} is available.")).strong());
+                        if u.method != UpdateMethod::Manual {
+                            let label = if u.message.is_some() { "Try again" } else { "Install now" };
+                            if ui.button(label).on_hover_text("Downloads the update and checks it, then installs it. Windows may ask for permission.").clicked()
+                            {
+                                self.send(Request::InstallUpdate);
+                            }
+                        }
+                    }
+                    UpdatePhase::Downloading => {
+                        ui.label(format!("Downloading FreeHM {version}…"));
+                        ui.add(egui::ProgressBar::new(u.progress.unwrap_or(0.0)).desired_width(180.0).show_percentage());
+                    }
+                    UpdatePhase::WaitingForGame => {
+                        ui.label(format!("FreeHM {version} is ready, and installs when your game closes."));
+                    }
+                    _ => {
+                        ui.label(format!("Installing FreeHM {version}…"));
+                    }
+                }
+                if let Some(url) = &u.page_url {
+                    ui.hyperlink_to(if u.method == UpdateMethod::Manual { "Download" } else { "What's new" }, url);
+                }
+            });
+            if let Some(m) = &u.message {
+                ui.colored_label(ui.visuals().warn_fg_color, m);
+            }
+        });
     }
 }
 
@@ -383,6 +426,10 @@ impl eframe::App for SettingsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_from_shared();
+        // An AppImage restarts as the new version: this window is the old one.
+        if self.status.as_ref().is_some_and(|s| s.update.phase == UpdatePhase::Installing && s.update.method == UpdateMethod::AppImage) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         self.actions.poll(&ctx);
         if self.actions.take_finished() {
             self.send(Request::RefreshPermissions);

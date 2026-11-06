@@ -84,6 +84,14 @@ jobs:
           if (Get-Service FreeHMHelper -ErrorAction SilentlyContinue) { throw "helper service left behind" }
           if (Test-Path "$app\freehm.exe") { throw "files left behind" }
           Write-Host "PASS: installer installs files + helper service and uninstalls them"
+      - name: Updater end-to-end (real installer, local release server)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=9.9.9" "/DBinDir=..\..\target\release" "/O$PWD\ci-update" installer\windows\freehm.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setup = (Get-ChildItem dist\FreeHM-*-setup.exe).FullName
+          ./tools/ci/windows-update-test.ps1 -Setup $setup -NewSetup ci-update\FreeHM-9.9.9-windows-x64-setup.exe -Presenter target\release\examples\present_loop.exe -Out ci-out
       - uses: actions/upload-artifact@v5
         if: always()
         with:
@@ -93,18 +101,6 @@ jobs:
         with:
           name: windows-installer
           path: dist/*.exe
-      - name: Portable files
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force portable/licenses | Out-Null
-          Copy-Item target/release/freehm.exe, target/release/freehm-helper.exe, README.md, THIRD_PARTY_NOTICES.md portable/
-          Copy-Item LICENSE portable/LICENSE.txt
-          Copy-Item assets/fonts/OFL-Exo2.txt, dist/THIRD_PARTY_LICENSES.html portable/licenses/
-          Copy-Item crates/freehm-helper/modules/COPYING.LGPL-2.1 portable/licenses/PawnIO-modules-LGPL-2.1.txt
-      - uses: actions/upload-artifact@v5
-        with:
-          name: windows-binaries
-          path: portable
 
   linux:
     name: Linux (build, test, packages, X11 + Wayland end-to-end)
@@ -168,6 +164,8 @@ jobs:
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run $A "dist/FreeHM-$V-x86_64.AppImage"
           "dist/FreeHM-$V-x86_64.AppImage" --appimage-extract-and-run --version
           ls -l dist
+      - name: Updater end-to-end (real AppImage, local release server)
+        run: bash tools/ci/linux-update-test.sh dist/FreeHM-*-x86_64.AppImage target/release/freehm ci-out
       - uses: actions/upload-artifact@v5
         if: always()
         with:

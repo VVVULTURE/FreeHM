@@ -14,6 +14,7 @@ use windows::core::PCWSTR;
 // shellapi.h: NIN_SELECT = WM_USER, NIN_KEYSELECT = NIN_SELECT | NINF_KEY.
 const NIN_SELECT: u32 = WM_USER;
 const NIN_KEYSELECT: u32 = WM_USER | 1;
+const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
 
 pub const WM_TRAY: u32 = WM_APP + 1;
 const ID_OPEN: usize = 1;
@@ -21,6 +22,7 @@ const ID_TOGGLE: usize = 2;
 const ID_DETECT: usize = 3;
 const ID_AUTOSTART: usize = 4;
 const ID_QUIT: usize = 5;
+const ID_UPDATE: usize = 6;
 
 pub struct Tray {
     hwnd: HWND,
@@ -32,8 +34,8 @@ pub struct Tray {
 impl Tray {
     pub fn new(hwnd: HWND) -> Tray {
         let icon = make_icon(32).unwrap_or_default();
-        let mut t =
-            Tray { hwnd, icon, state: TrayState { overlay_visible: false, detection_enabled: true, autostart: true, tooltip: "FreeHM".into() }, added: false };
+        let state = TrayState { overlay_visible: false, detection_enabled: true, autostart: true, tooltip: "FreeHM".into(), update: None };
+        let mut t = Tray { hwnd, icon, state, added: false };
         t.add();
         t
     }
@@ -113,7 +115,7 @@ impl Tray {
     pub fn on_message(&self, wp: WPARAM, lp: LPARAM) -> Option<TrayAction> {
         let event = (lp.0 as u32) & 0xFFFF;
         match event {
-            NIN_SELECT | NIN_KEYSELECT => Some(TrayAction::OpenSettings),
+            NIN_SELECT | NIN_KEYSELECT | NIN_BALLOONUSERCLICK => Some(TrayAction::OpenSettings),
             WM_CONTEXTMENU => {
                 // With NOTIFYICON_VERSION_4 the anchor point is in wParam.
                 let x = (wp.0 & 0xFFFF) as i16 as i32;
@@ -138,6 +140,11 @@ impl Tray {
                 let w = wide(text);
                 let _ = AppendMenuW(m, flags, id, PCWSTR(w.as_ptr()));
             }
+            if let Some(label) = &self.state.update {
+                let w = wide(label);
+                let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
+                let _ = AppendMenuW(m, MF_STRING, ID_UPDATE, PCWSTR(w.as_ptr()));
+            }
             let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
             let q = wide("Quit FreeHM");
             let _ = AppendMenuW(m, MF_STRING, ID_QUIT, PCWSTR(q.as_ptr()));
@@ -151,6 +158,7 @@ impl Tray {
                 ID_TOGGLE => Some(TrayAction::ToggleOverlay),
                 ID_DETECT => Some(TrayAction::ToggleDetection),
                 ID_AUTOSTART => Some(TrayAction::ToggleAutostart),
+                ID_UPDATE => Some(TrayAction::InstallUpdate),
                 ID_QUIT => Some(TrayAction::Quit),
                 _ => None,
             }

@@ -166,7 +166,8 @@ if ($Helper) {
     & sc.exe qprivs FreeHMHelper | Tee-Object "$Out\helper-privileges.txt"
     # A real D3D11 swap chain (WARP on runners without a GPU) for the frame-timing checks.
     $pl = Join-Path (Split-Path $hx) "examples\present_loop.exe"
-    $presenter = if (Test-Path $pl) { Start-Process $pl -ArgumentList "100" -PassThru -RedirectStandardOutput "$Out\present-loop.txt" } else { $null }
+    # Regular stalls, so that the 1% and 0.1% lows are far from the average frame rate.
+    $presenter = if (Test-Path $pl) { Start-Process $pl -ArgumentList "240", "--stutter", "50:40" -PassThru -RedirectStandardOutput "$Out\present-loop.txt" } else { $null }
     Start-Sleep -Seconds 2
     $self = & $hx selftest 2>&1 | Tee-Object "$Out\helper-selftest.txt" | Out-String
     if ($presenter) {
@@ -227,7 +228,8 @@ if ($Helper) {
         # Whole path: app -> helper service (named pipe) -> ETW -> overlay readings.
         $cfg = Join-Path ([IO.Path]::GetTempPath()) ("freehm-ci-fps-" + [guid]::NewGuid())
         New-Item -ItemType Directory $cfg | Out-Null
-        @{ schema_version = 1; general = @{ start_with_system = $false }; detection = @{ auto_detect = $false; manual_games = @("present_loop.exe") }
+        $metrics = "Fps", "FrameTime", "FpsLow1", "FpsLow01" | ForEach-Object { @{ id = $_; enabled = $true } }
+        @{ schema_version = 1; general = @{ start_with_system = $false }; detection = @{ auto_detect = $false; manual_games = @("present_loop.exe") }; metrics = $metrics
            hotkeys = @{ toggle_overlay = "Ctrl+Alt+Shift+F12" }; permissions = @{ first_run_done = $true } } | ConvertTo-Json -Depth 5 | Set-Content "$cfg\config.json" -Encoding utf8
         $env:FREEHM_CONFIG_DIR = $cfg
         # Game detection follows the foreground window. Windows only lets the process with
@@ -242,8 +244,26 @@ if ($Helper) {
             try { $s2 = Status } catch { continue }
             $fps = $s2.snapshot.readings | Where-Object { $_.metric -eq "Fps" -and $null -ne $_.value } | Select-Object -First 1
         }
+        # The 1% and 0.1% lows, against the presenter's own measurement of the same frames.
+        $reading = { param($id) $s2.snapshot.readings | Where-Object { $_.metric -eq $id -and $null -ne $_.value } | Select-Object -First 1 }
+        $low1 = $null; $low01 = $null
+        for ($i = 0; $i -lt 70 -and -not ($low1 -and $low01); $i++) {
+            Start-Sleep -Seconds 1
+            try { $s2 = Status } catch { continue }
+            $low1 = & $reading "FpsLow1"; $low01 = & $reading "FpsLow01"
+        }
         $s2 | ConvertTo-Json -Depth 12 | Set-Content "$Out\windows-status-fps.json"
+        $own = [regex]::Match((Get-Content "$Out\present-loop.txt" -Tail 3 | Out-String), "lows: frames=(\d+) low1=([\d.]+) low01=([\d.]+)")
         & $exe --quit | Out-Null; $null = $app2.WaitForExit(10000)
+        if ($fps) {
+            if (-not ($low1 -and $low01)) { Fail "no lows after 70 s: $(($s2.snapshot.readings | Where-Object { $_.metric -like 'FpsLow*' } | ForEach-Object { "$($_.metric): $($_.reason)" }) -join '; ')" }
+            if (-not $own.Success) { Fail "the presenter reported no lows" }
+            foreach ($c in @(@("1%", $low1.value, [double]$own.Groups[2].Value), @("0.1%", $low01.value, [double]$own.Groups[3].Value))) {
+                $off = [math]::Abs($c[1] - $c[2]) / $c[2]
+                if ($off -gt 0.15) { Fail "$($c[0]) low: FreeHM $($c[1]), the presenter measured $($c[2])" }
+            }
+            Pass "lows match the presenter's own over $($own.Groups[1].Value) frames: 1% $([math]::Round($low1.value,1)) vs $($own.Groups[2].Value), 0.1% $([math]::Round($low01.value,1)) vs $($own.Groups[3].Value), average $([math]::Round($fps.value,1)) fps"
+        }
         if (-not $fps) {
             # Tell a helper problem from an app problem: what does the service itself see now?
             $seen = try { $c = HelperConnect; $r = HelperAsk $c; $c.Dispose(); ($r.frames.processes | ForEach-Object { "$($_.pid) $([math]::Round($_.stats.fps,1)) fps" }) -join ", " } catch { "query failed: $_" }

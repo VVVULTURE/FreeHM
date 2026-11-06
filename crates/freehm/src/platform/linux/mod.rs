@@ -143,6 +143,10 @@ impl Platform for LinuxPlatform {
         }
     }
 
+    fn notify(&mut self, title: &str, text: &str) {
+        dbus::notify(title, text);
+    }
+
     fn register_hotkey(&mut self, hk: &Hotkey) -> Result<String, String> {
         match &self.shortcuts {
             Shortcuts::X11 => self.x11.as_ref().ok_or("no X connection")?.grab_hotkey(hk),
@@ -291,7 +295,8 @@ pub fn run(cfg: Config, cfg_path: std::path::PathBuf, notes: Vec<String>, mock: 
         session,
         backend_note,
     };
-    let mut app = App::new(cfg, cfg_path, notes, telemetry, detector, &mut plat);
+    let update = crate::updater::Updater::new(sink.clone(), !mock);
+    let mut app = App::new(cfg, cfg_path, notes, telemetry, detector, update, &mut plat);
     log::info!("FreeHM {} running on {} — overlay: {}", freehm_core::APP_VERSION, plat.session, plat.overlay_backend());
     if open_settings {
         app.handle(AppEvent::Tray(TrayAction::OpenSettings), &mut plat);

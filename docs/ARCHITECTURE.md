@@ -65,6 +65,7 @@ crates and modules only provide facts and windows.
 | Game detection | `crates/freehm/src/detect.rs`, `freehm-core/src/gamedetect.rs`, `platform/*/probe.rs` | foreground-first detection; full process scan only when the foreground changes (or on Wayland without focus info) |
 | Tray | `platform/windows/tray.rs`, `platform/linux/tray.rs` | menu: settings, show/hide, detection, autostart, quit |
 | Shortcut | `platform/windows/mod.rs`, `platform/linux/{x11,dbus}.rs` | registration + conflict reporting |
+| Updater | `crates/freehm/src/updater.rs`, `freehm-core/src/update.rs` | asks GitHub for the latest release, downloads and verifies it on background threads, installs it when no game is active; the only code that uses the network |
 | Settings UI | `crates/freehm/src/settings/` | egui pages, live preview with the real renderer, debounced live apply |
 | IPC | `freehm-core/src/{ipc,wire}.rs`, `platform/*/ipc.rs` | length-prefixed JSON over a per-user pipe/socket |
 | Helper service | `crates/freehm-helper` | PawnIO CPU temperature/power, ETW frame timing, ACL'd pipe |

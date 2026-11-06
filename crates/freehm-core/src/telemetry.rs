@@ -561,6 +561,8 @@ pub mod mock {
                     (DEVICE_MEMORY, MetricId::RamUsage, w(14.2, 0.3, 0.2) / 31.7 * 100.0),
                     (DEVICE_GAME, MetricId::Fps, w(144.0, 12.0, 1.7)),
                     (DEVICE_GAME, MetricId::FrameTime, 1000.0 / w(144.0, 12.0, 1.7)),
+                    (DEVICE_GAME, MetricId::FpsLow1, w(96.0, 8.0, 5.3)),
+                    (DEVICE_GAME, MetricId::FpsLow01, w(71.0, 9.0, 7.1)),
                 ];
                 for (d, m, v) in vals {
                     if req.metrics.contains(m) {

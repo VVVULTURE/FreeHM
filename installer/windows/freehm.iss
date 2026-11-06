@@ -24,7 +24,8 @@ AppSupportURL=https://github.com/VVVULTURE/FreeHM/issues
 DefaultDirName={autopf}\FreeHM
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
+; "commandline": FreeHM's updater keeps an install for one user that way, without elevation.
+PrivilegesRequiredOverridesAllowed=commandline dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
@@ -73,12 +74,19 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupA
 [Run]
 Filename: "{app}\freehm-helper.exe"; Parameters: "install"; StatusMsg: "Registering the FreeHM hardware helper service..."; Flags: runhidden waituntilterminated; Tasks: helper
 Filename: "{app}\freehm.exe"; Description: "Start FreeHM"; Flags: nowait postinstall runasoriginaluser skipifsilent
+; FreeHM's updater runs this installer silently, and FreeHM was running before it.
+Filename: "{app}\freehm.exe"; Parameters: "--background"; Flags: nowait runasoriginaluser; Check: RestartRequested
 
 [UninstallRun]
 Filename: "{app}\freehm.exe"; Parameters: "--quit"; Flags: runhidden waituntilterminated; RunOnceId: "QuitApp"
 Filename: "{app}\freehm-helper.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveHelper"; Check: IsAdminInstallMode
 
 [Code]
+function RestartRequested(): Boolean;
+begin
+  Result := ExpandConstant('{param:freehmrestart|0}') = '1';
+end;
+
 function ServiceInstalled(): Boolean;
 var
   Code: Integer;
@@ -97,6 +105,12 @@ begin
   if IsAdminInstallMode and ServiceInstalled() then
     Exec(ExpandConstant('{sys}\sc.exe'), 'stop FreeHMHelper', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Sleep(1500);
+  // An open settings window is a second freehm.exe, which would keep the file in use.
+  if FileExists(ExpandConstant('{app}\freehm.exe')) then
+  begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM freehm.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    Sleep(300);
+  end;
 end;
 
 // After an upgrade without the helper task, restart a helper that was installed before.

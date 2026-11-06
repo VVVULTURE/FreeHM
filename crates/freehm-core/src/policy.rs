@@ -97,7 +97,7 @@ pub fn poll_plan(cfg: &Config, overlay_visible: bool, settings_live: bool, game_
     } else {
         MetricSet::default()
     };
-    let wants_frames = metrics.any_of(&[MetricId::Fps, MetricId::FrameTime]);
+    let wants_frames = metrics.any_of(&MetricId::FRAME_METRICS);
     let game_pids = if wants_frames { game_pids.to_vec() } else { Vec::new() };
     (interval, PollRequest { metrics, game_pids })
 }

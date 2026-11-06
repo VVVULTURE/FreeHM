@@ -8,6 +8,7 @@
 //!   bound to a key in the desktop's own keyboard settings.
 //! * **logind `PrepareForSleep`** — tells the app the system resumed, so sensors are
 //!   re-initialised and the overlay is re-placed.
+//! * **`org.freedesktop.Notifications`** — desktop notifications.
 
 use crate::app::{AppEvent, EventSink};
 use freehm_core::hotkey::{Hotkey, Key};
@@ -179,6 +180,21 @@ fn bind(conn: &Connection, session: &Mutex<Option<String>>, hk: &Hotkey, n: u32)
         Some(_) => Ok(format!("XDG GlobalShortcuts portal (requested {trigger}; the desktop shows the assigned key in its shortcut settings)")),
         None => Err("the desktop did not bind the shortcut; bind `freehm --toggle` in the desktop's keyboard settings instead".into()),
     }
+}
+
+/// Show a desktop notification. Without a notification service this does nothing.
+pub fn notify(title: &str, text: &str) {
+    let (title, text) = (title.to_string(), text.to_string());
+    let _ = std::thread::Builder::new().name("notify".into()).spawn(move || {
+        let sent = Connection::session().and_then(|conn| {
+            let p = Proxy::new(&conn, "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications")?;
+            let hints: HashMap<&str, Value> = HashMap::new();
+            p.call::<_, _, u32>("Notify", &("FreeHM", 0u32, APP_ID, title.as_str(), text.as_str(), Vec::<&str>::new(), hints, -1i32))
+        });
+        if let Err(e) = sent {
+            log::info!("could not show a notification: {e}");
+        }
+    });
 }
 
 /// Post `AppEvent::Resumed` after every resume from suspend/hibernate.

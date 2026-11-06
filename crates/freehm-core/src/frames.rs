@@ -7,7 +7,13 @@
 //! - **FPS** is the number of present intervals in the trailing [`FPS_WINDOW_NS`] divided by
 //!   their span — i.e. the reciprocal of the mean frame time over one second.
 //!
-//! Both windows end at the newest present received, not at "now": real-time ETW hands
+//! - **1 % / 0.1 % low** is the average of the slowest 1 % / 0.1 % of the frames in the
+//!   trailing [`LOWS_WINDOW_NS`], shown as FPS: the frames are ordered by frame time, the
+//!   slowest ones averaged, and 1000 ms divided by that average. It needs at least
+//!   [`LOW_1_MIN_FRAMES`] / [`LOW_01_MIN_FRAMES`] frames; with fewer there is no such thing
+//!   as "the slowest 1 %", so nothing is reported rather than a misleading number.
+//!
+//! The windows end at the newest present received, not at "now": real-time ETW hands
 //! events over in buffers, up to [`DELIVERY_LAG_NS`] late. A process whose newest present
 //! is older than that has stopped presenting and gets no statistics.
 //!
@@ -19,17 +25,27 @@ use std::collections::{HashMap, VecDeque};
 
 pub const FPS_WINDOW_NS: u64 = 1_000_000_000;
 pub const FRAMETIME_WINDOW_NS: u64 = 250_000_000;
+/// Rolling window of the 1 % and 0.1 % lows.
+pub const LOWS_WINDOW_NS: u64 = 60_000_000_000;
+/// Frames needed in that window: 1 % of 100 and 0.1 % of 1000 are one frame.
+pub const LOW_1_MIN_FRAMES: u32 = 100;
+pub const LOW_01_MIN_FRAMES: u32 = 1000;
+/// The lows sort up to [`MAX_PER_RING`] frame times and change slowly; once a second is enough.
+const LOWS_PERIOD_NS: u64 = 1_000_000_000;
 /// Longest expected delay between a present and its event reaching the helper. The helper
 /// flushes its ETW session on every request and the session's flush timer is one second,
 /// so delivery is normally well under a second; the margin keeps FPS from flickering to
 /// N/A when a flush is late.
 pub const DELIVERY_LAG_NS: u64 = 2_000_000_000;
-/// Presents older than this are discarded (FPS window + delivery lag + margin).
-const KEEP_NS: u64 = 4_000_000_000;
+/// Presents older than this are discarded (lows window + delivery lag + margin).
+const KEEP_NS: u64 = LOWS_WINDOW_NS + DELIVERY_LAG_NS + 2_000_000_000;
 /// A process with no presents for this long is forgotten.
 const FORGET_NS: u64 = 10_000_000_000;
-const MAX_PER_RING: usize = 8192;
+/// 60 s at 1090 FPS. Above that the lows cover the newest 65 536 frames.
+const MAX_PER_RING: usize = 65_536;
 const MAX_PROCESSES: usize = 128;
+/// All rings together (2 MB). The least recently active processes go first.
+const MAX_TOTAL_PRESENTS: usize = 1 << 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PresentSource {
@@ -49,42 +65,101 @@ pub struct FrameStats {
     /// Present intervals that contributed to `fps`.
     pub samples: u32,
     pub last_present_age_ms: u64,
+    /// `None` until the window holds [`LOW_1_MIN_FRAMES`] frames.
+    #[serde(default)]
+    pub low_1_fps: Option<f64>,
+    /// `None` until the window holds [`LOW_01_MIN_FRAMES`] frames.
+    #[serde(default)]
+    pub low_01_fps: Option<f64>,
+    /// Frames in the lows window. Zero from a helper too old to report lows.
+    #[serde(default)]
+    pub low_frames: u32,
+}
+
+/// 1 % and 0.1 % lows, see the module documentation.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Lows {
+    pub low_1_fps: Option<f64>,
+    pub low_01_fps: Option<f64>,
+    pub frames: u32,
+}
+
+/// Average of the `slowest` largest frame times (ns) as FPS. Reorders `frame_ns` so that
+/// they come first, so a smaller share can be taken from the front afterwards.
+fn average_of_slowest(frame_ns: &mut [u64], slowest: usize) -> f64 {
+    frame_ns.select_nth_unstable_by(slowest - 1, |a, b| b.cmp(a));
+    let sum: u64 = frame_ns[..slowest].iter().sum();
+    slowest as f64 * 1e9 / sum.max(1) as f64
+}
+
+/// Lows of the frames in the [`LOWS_WINDOW_NS`] ending at `end`. `scratch` is reused between
+/// calls so a once-a-second recalculation allocates nothing.
+pub fn compute_lows(ts: &VecDeque<u64>, end: u64, scratch: &mut Vec<u64>) -> Lows {
+    let first = ts.partition_point(|&t| t < end.saturating_sub(LOWS_WINDOW_NS));
+    let last = ts.partition_point(|&t| t <= end);
+    scratch.clear();
+    if last > first {
+        scratch.extend(ts.range(first..last).zip(ts.range(first + 1..last)).map(|(a, b)| b - a));
+    }
+    let frames = scratch.len() as u32;
+    let share = |percent: f64| ((scratch.len() as f64 * percent / 100.0).ceil() as usize).max(1);
+    let (one, tenth) = (share(1.0), share(0.1));
+    let mut lows = Lows { frames, ..Default::default() };
+    if frames >= LOW_1_MIN_FRAMES {
+        lows.low_1_fps = Some(average_of_slowest(scratch, one));
+    }
+    if frames >= LOW_01_MIN_FRAMES {
+        // The slowest 0.1 % are among the slowest 1 % moved to the front above.
+        lows.low_01_fps = Some(average_of_slowest(&mut scratch[..one], tenth));
+    }
+    lows
 }
 
 /// Compute statistics from ascending timestamps (ns) at time `now`.
 /// Returns `None` when the newest present is older than [`DELIVERY_LAG_NS`] or fewer than
 /// two presents fall in the FPS window.
 pub fn compute(ts: &VecDeque<u64>, now: u64) -> Option<FrameStats> {
-    let end = ts.iter().rev().copied().find(|&t| t <= now)?;
+    let last = ts.partition_point(|&t| t <= now);
+    let end = *ts.get(last.checked_sub(1)?)?;
     if now - end > DELIVERY_LAG_NS {
         return None;
     }
-    let fps_start = end.saturating_sub(FPS_WINDOW_NS);
-    let in_fps: Vec<u64> = ts.iter().copied().filter(|&t| t >= fps_start && t <= end).collect();
-    if in_fps.len() < 2 {
+    // The ring holds a minute of presents; these windows are its last second, found by
+    // bisection instead of walking it on every poll.
+    let first = ts.partition_point(|&t| t < end.saturating_sub(FPS_WINDOW_NS));
+    let count = last - first;
+    if count < 2 {
         return None;
     }
-    let span = (in_fps[in_fps.len() - 1] - in_fps[0]) as f64;
+    let span = (end - ts[first]) as f64;
     if span <= 0.0 {
         return None;
     }
-    let intervals = (in_fps.len() - 1) as f64;
+    let intervals = (count - 1) as f64;
     let fps = intervals * 1e9 / span;
 
     let ft_start = end.saturating_sub(FRAMETIME_WINDOW_NS);
-    let mut first_ft = in_fps.iter().position(|&t| t >= ft_start).unwrap_or(in_fps.len() - 1);
     // Need at least two intervals; extend backwards into the FPS window if necessary.
-    first_ft = first_ft.min(in_fps.len().saturating_sub(3));
-    let ft_slice = &in_fps[first_ft..];
-    let frametime_ms = (ft_slice[ft_slice.len() - 1] - ft_slice[0]) as f64 / 1e6 / (ft_slice.len() - 1) as f64;
+    let first_ft = ts.partition_point(|&t| t < ft_start).clamp(first, last - 1).min(first + count.saturating_sub(3));
+    let frametime_ms = (end - ts[first_ft]) as f64 / 1e6 / (last - 1 - first_ft) as f64;
 
-    Some(FrameStats { fps, frametime_ms, samples: intervals as u32, last_present_age_ms: (now - end) / 1_000_000 })
+    Some(FrameStats {
+        fps,
+        frametime_ms,
+        samples: intervals as u32,
+        last_present_age_ms: (now - end) / 1_000_000,
+        low_1_fps: None,
+        low_01_fps: None,
+        low_frames: 0,
+    })
 }
 
 #[derive(Default)]
 struct ProcessRings {
     rings: HashMap<PresentSource, VecDeque<u64>>,
     last_seen: u64,
+    /// Last lows calculated: when, and for which source.
+    lows: Option<(u64, PresentSource, Lows)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,6 +173,7 @@ pub struct ProcessFrames {
 #[derive(Default)]
 pub struct PresentTracker {
     procs: HashMap<u32, ProcessRings>,
+    scratch: Vec<u64>,
 }
 
 impl PresentTracker {
@@ -134,6 +210,13 @@ impl PresentTracker {
             }
             now.saturating_sub(p.last_seen) < FORGET_NS
         });
+        let mut total: usize = self.procs.values().flat_map(|p| p.rings.values()).map(VecDeque::len).sum();
+        while total > MAX_TOTAL_PRESENTS {
+            let Some(&pid) = self.procs.iter().min_by_key(|(_, p)| p.last_seen).map(|(pid, _)| pid) else { break };
+            if let Some(p) = self.procs.remove(&pid) {
+                total -= p.rings.values().map(VecDeque::len).sum::<usize>();
+            }
+        }
     }
 
     /// Statistics for every process that presented in the last second, highest FPS first.
@@ -142,13 +225,25 @@ impl PresentTracker {
     pub fn snapshot(&mut self, now: u64) -> Vec<ProcessFrames> {
         self.prune(now);
         let mut out = Vec::new();
-        for (&pid, p) in &self.procs {
+        for (&pid, p) in &mut self.procs {
             let pick = [PresentSource::Dxgi, PresentSource::D3d9]
                 .into_iter()
                 .filter_map(|s| p.rings.get(&s).and_then(|r| compute(r, now)).map(|st| (s, st)))
                 .max_by_key(|(_, st)| st.samples)
                 .or_else(|| p.rings.get(&PresentSource::Kernel).and_then(|r| compute(r, now)).map(|st| (PresentSource::Kernel, st)));
-            if let Some((source, stats)) = pick {
+            if let Some((source, mut stats)) = pick {
+                let lows = match p.lows {
+                    Some((at, s, l)) if s == source && now.saturating_sub(at) < LOWS_PERIOD_NS => l,
+                    _ => {
+                        let end = now.saturating_sub(stats.last_present_age_ms * 1_000_000);
+                        let l = compute_lows(&p.rings[&source], end, &mut self.scratch);
+                        p.lows = Some((now, source, l));
+                        l
+                    }
+                };
+                stats.low_1_fps = lows.low_1_fps;
+                stats.low_01_fps = lows.low_01_fps;
+                stats.low_frames = lows.frames;
                 out.push(ProcessFrames { pid, source, stats });
             }
         }
@@ -198,6 +293,137 @@ mod tests {
         let s = compute(&r, t).unwrap();
         assert!((s.frametime_ms - 50.0).abs() < 1.0, "frametime {}", s.frametime_ms);
         assert!(s.fps > 20.0 && s.fps < 100.0, "fps {}", s.fps);
+    }
+
+    /// `frames` frames of `slow_ms` milliseconds spread evenly through `count` frames that
+    /// otherwise take `normal_ms`.
+    fn with_slow_frames(count: usize, normal_ms: u64, frames: usize, slow_ms: u64) -> VecDeque<u64> {
+        let mut r = VecDeque::from([0u64]);
+        let mut t = 0;
+        for i in 0..count {
+            t += if i * frames / count != (i + 1) * frames / count { slow_ms } else { normal_ms } * MS;
+            r.push_back(t);
+        }
+        r
+    }
+
+    #[test]
+    fn lows_are_the_average_of_the_slowest_frames_as_fps() {
+        // 5000 frames: 50 (exactly 1 %) take 40 ms, the rest 10 ms.
+        let r = with_slow_frames(5000, 10, 50, 40);
+        let l = compute_lows(&r, *r.back().unwrap(), &mut Vec::new());
+        assert_eq!(l.frames, 5000);
+        assert!((l.low_1_fps.unwrap() - 25.0).abs() < 1e-9, "{l:?}");
+        assert!((l.low_01_fps.unwrap() - 25.0).abs() < 1e-9, "the slowest 5 are all 40 ms: {l:?}");
+
+        // Worst five frames differ: the 0.1 % low averages only those, the 1 % low all 50.
+        let mut r = VecDeque::from([0u64]);
+        let mut t = 0;
+        for i in 0..5000 {
+            t += match i {
+                0..5 => 100,
+                5..50 => 20,
+                _ => 10,
+            } * MS;
+            r.push_back(t);
+        }
+        let l = compute_lows(&r, t, &mut Vec::new());
+        assert!((l.low_01_fps.unwrap() - 10.0).abs() < 1e-9, "{l:?}");
+        let mean_ms = (5.0 * 100.0 + 45.0 * 20.0) / 50.0;
+        assert!((l.low_1_fps.unwrap() - 1000.0 / mean_ms).abs() < 1e-9, "{l:?}");
+    }
+
+    #[test]
+    fn lows_match_a_full_sort() {
+        // select_nth is an optimisation; the result must equal the plain definition.
+        let mut r = VecDeque::from([0u64]);
+        let (mut t, mut x) = (0u64, 12345u64);
+        let mut frames = Vec::new();
+        for _ in 0..7777 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let ft = 1_000_000 + (x >> 40) % 6_000_000; // 31 s in all: inside the window
+            t += ft;
+            frames.push(ft);
+            r.push_back(t);
+        }
+        frames.sort_unstable_by(|a, b| b.cmp(a));
+        let avg = |n: usize| n as f64 * 1e9 / frames[..n].iter().sum::<u64>() as f64;
+        let l = compute_lows(&r, t, &mut Vec::new());
+        assert!((l.low_1_fps.unwrap() - avg(78)).abs() < 1e-9, "ceil(77.77) frames: {l:?}");
+        assert!((l.low_01_fps.unwrap() - avg(8)).abs() < 1e-9, "ceil(7.777) frames: {l:?}");
+    }
+
+    #[test]
+    fn lows_wait_for_enough_frames() {
+        let l = compute_lows(&ring(10 * MS, 100, 0), 99 * 10 * MS, &mut Vec::new());
+        assert_eq!((l.frames, l.low_1_fps, l.low_01_fps), (99, None, None), "99 frames are not enough for a 1 % low");
+        let l = compute_lows(&ring(10 * MS, 101, 0), 100 * 10 * MS, &mut Vec::new());
+        assert!(l.low_1_fps.is_some() && l.low_01_fps.is_none(), "{l:?}");
+        let l = compute_lows(&ring(10 * MS, 1001, 0), 1000 * 10 * MS, &mut Vec::new());
+        assert!(l.low_1_fps.is_some() && l.low_01_fps.is_some(), "{l:?}");
+        assert_eq!(compute_lows(&VecDeque::new(), 0, &mut Vec::new()).frames, 0);
+        assert_eq!(compute_lows(&VecDeque::from([5]), 5, &mut Vec::new()).frames, 0);
+    }
+
+    #[test]
+    fn lows_forget_frames_older_than_the_window() {
+        // A 500 ms hitch, then 70 s of steady 10 ms frames.
+        let mut r = VecDeque::from([0u64, 500 * MS]);
+        let mut t = 500 * MS;
+        for _ in 0..7000 {
+            t += 10 * MS;
+            r.push_back(t);
+        }
+        let l = compute_lows(&r, t, &mut Vec::new());
+        assert_eq!(l.frames, 6000, "only the last 60 s count");
+        assert!((l.low_1_fps.unwrap() - 100.0).abs() < 1e-9, "{l:?}");
+        // While the hitch is inside the window it dominates the 0.1 % low.
+        let in_window = 30_000 * MS;
+        let l = compute_lows(&r, in_window, &mut Vec::new());
+        assert!(l.low_01_fps.unwrap() < 30.0, "{l:?}");
+    }
+
+    #[test]
+    fn tracker_reports_lows_and_recalculates_once_a_second() {
+        let mut t = PresentTracker::default();
+        let mut now = 0;
+        for i in 0..3000u64 {
+            now = (i + 1) * 10 * MS;
+            t.record(7, PresentSource::Dxgi, now);
+        }
+        let s = t.snapshot(now).remove(0).stats;
+        assert_eq!(s.low_frames, 2999);
+        assert!((s.low_1_fps.unwrap() - 100.0).abs() < 1e-9, "{s:?}");
+        // Slow frames arrive; within the second the cached value stands, then it updates.
+        for i in 0..50u64 {
+            now += 100 * MS;
+            t.record(7, PresentSource::Dxgi, now);
+            if i == 3 {
+                assert_eq!(t.snapshot(now).remove(0).stats.low_frames, 2999, "cached");
+            }
+        }
+        now += 1_000 * MS;
+        t.record(7, PresentSource::Dxgi, now);
+        let s = t.snapshot(now).remove(0).stats;
+        assert_eq!(s.low_frames, 3050);
+        assert!(s.low_1_fps.unwrap() < 12.0, "{s:?}");
+    }
+
+    #[test]
+    fn total_presents_stay_bounded() {
+        let mut t = PresentTracker::default();
+        // Twenty processes each filling a ring within the keep window.
+        let now = 50_000 * MS;
+        for pid in 0..20u32 {
+            for i in 0..30_000u64 {
+                t.record(pid, PresentSource::Dxgi, now - 30_000 * 1000 + i * 1000 + pid as u64);
+            }
+        }
+        t.prune(now);
+        let total: usize = t.procs.values().flat_map(|p| p.rings.values()).map(VecDeque::len).sum();
+        assert!(total <= MAX_TOTAL_PRESENTS, "{total}");
+        assert!(t.process_count() >= 8, "evicts only what it must: {}", t.process_count());
+        assert!(t.last_seen(19).is_some(), "the most recently active process is kept");
     }
 
     #[test]

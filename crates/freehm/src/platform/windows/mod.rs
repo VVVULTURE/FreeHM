@@ -64,7 +64,10 @@ unsafe extern "system" fn main_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPA
             }
             return LRESULT(1);
         }
-        WM_DISPLAYCHANGE | WM_DPICHANGED => push_event(AppEvent::DisplayChanged),
+        WM_DISPLAYCHANGE | WM_DPICHANGED => {
+            overlay::forget_monitor_names();
+            push_event(AppEvent::DisplayChanged);
+        }
         WM_SETTINGCHANGE if wp.0 == SPI_SETWORKAREA.0 as usize => push_event(AppEvent::DisplayChanged),
         WM_TIMER if wp.0 == TIMER_TICK => TICK.with(|t| t.set(true)),
         WM_QUERYENDSESSION => return LRESULT(1),
@@ -444,7 +447,8 @@ pub fn run(cfg: Config, cfg_path: std::path::PathBuf, notes: Vec<String>, mock: 
         let _ = SetTimer(Some(hwnd), TIMER_TICK, 1000, None);
 
         let mut plat = WinPlatform { hwnd, overlay, hotkey_registered: false, settings_child: None, helper_shared, helper_enabled };
-        let mut app = App::new(cfg, cfg_path, notes, telemetry, detector, &mut plat);
+        let update = crate::updater::Updater::new(sink.clone(), !mock);
+        let mut app = App::new(cfg, cfg_path, notes, telemetry, detector, update, &mut plat);
         log::info!("FreeHM {} running", freehm_core::APP_VERSION);
         if open_settings {
             app.handle(AppEvent::Tray(crate::app::TrayAction::OpenSettings), &mut plat);

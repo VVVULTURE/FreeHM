@@ -1,7 +1,8 @@
 //! Per-user file locations.
-//! - Windows: `%APPDATA%\FreeHM\config.json`, logs in `%LOCALAPPDATA%\FreeHM\logs`.
+//! - Windows: `%APPDATA%\FreeHM\config.json`, logs in `%LOCALAPPDATA%\FreeHM\logs`, downloaded
+//!   updates in `%LOCALAPPDATA%\FreeHM\updates`.
 //! - Linux (XDG): `$XDG_CONFIG_HOME/freehm/config.json`, logs in `$XDG_STATE_HOME/freehm`,
-//!   IPC socket in `$XDG_RUNTIME_DIR/freehm`.
+//!   IPC socket in `$XDG_RUNTIME_DIR/freehm`, downloaded updates in `$XDG_CACHE_HOME/freehm`.
 //!
 //! `FREEHM_CONFIG_DIR` overrides the configuration directory (used by tests and for
 //! portable setups).
@@ -26,6 +27,23 @@ pub fn log_dir() -> PathBuf {
         return d.join("logs");
     }
     env_dir("LOCALAPPDATA").unwrap_or_else(|| PathBuf::from(".")).join("FreeHM").join("logs")
+}
+
+/// Downloaded updates, emptied whenever FreeHM starts.
+#[cfg(windows)]
+pub fn update_dir() -> PathBuf {
+    if let Some(d) = env_dir("FREEHM_CONFIG_DIR") {
+        return d.join("updates");
+    }
+    env_dir("LOCALAPPDATA").unwrap_or_else(|| PathBuf::from(".")).join("FreeHM").join("updates")
+}
+
+#[cfg(not(windows))]
+pub fn update_dir() -> PathBuf {
+    if let Some(d) = env_dir("FREEHM_CONFIG_DIR") {
+        return d.join("updates");
+    }
+    env_dir("XDG_CACHE_HOME").unwrap_or_else(|| home().join(".cache")).join("freehm").join("updates")
 }
 
 #[cfg(not(windows))]

@@ -28,12 +28,21 @@ pub enum MetricId {
     GpuSharedMem,
     Fps,
     FrameTime,
+    /// Average of the slowest 1 % of the frames in the last 60 s, as FPS.
+    FpsLow1,
+    /// Average of the slowest 0.1 % of the frames in the last 60 s, as FPS.
+    FpsLow01,
 }
 
 impl MetricId {
-    pub const ALL: [MetricId; 17] = [
+    /// Metrics that come from present timing.
+    pub const FRAME_METRICS: [MetricId; 4] = [MetricId::Fps, MetricId::FrameTime, MetricId::FpsLow1, MetricId::FpsLow01];
+
+    pub const ALL: [MetricId; 19] = [
         MetricId::Fps,
         MetricId::FrameTime,
+        MetricId::FpsLow1,
+        MetricId::FpsLow01,
         MetricId::GpuUsage,
         MetricId::GpuTemp,
         MetricId::GpuClock,
@@ -59,7 +68,7 @@ impl MetricId {
             CpuClock | GpuClock => Unit::Megahertz,
             CpuPower | GpuPower => Unit::Watts,
             RamUsed | RamTotal | VramUsed | VramTotal | GpuSharedMem => Unit::Bytes,
-            Fps => Unit::FramesPerSecond,
+            Fps | FpsLow1 | FpsLow01 => Unit::FramesPerSecond,
             FrameTime => Unit::Milliseconds,
         }
     }
@@ -70,7 +79,7 @@ impl MetricId {
             CpuUsage | CpuTemp | CpuClock | CpuPower => DeviceKind::Cpu,
             GpuUsage | GpuTemp | GpuClock | GpuPower | VramUsed | VramUsage | VramTotal | GpuSharedMem => DeviceKind::Gpu,
             RamUsed | RamUsage | RamTotal => DeviceKind::Memory,
-            Fps | FrameTime => DeviceKind::Game,
+            Fps | FrameTime | FpsLow1 | FpsLow01 => DeviceKind::Game,
         }
     }
 
@@ -95,6 +104,8 @@ impl MetricId {
             GpuSharedMem => "GPU shared memory",
             Fps => "Frame rate (FPS)",
             FrameTime => "Frame time",
+            FpsLow1 => "Frame rate 1% low",
+            FpsLow01 => "Frame rate 0.1% low",
         }
     }
 
@@ -119,6 +130,8 @@ impl MetricId {
             GpuSharedMem => "GPU Shared",
             Fps => "FPS",
             FrameTime => "Frame Time",
+            FpsLow1 => "1% Low",
+            FpsLow01 => "0.1% Low",
         }
     }
 
@@ -139,6 +152,8 @@ impl MetricId {
             GpuSharedMem => "SHR",
             Fps => "FPS",
             FrameTime => "FT",
+            FpsLow1 => "1%L",
+            FpsLow01 => ".1%L",
         }
     }
 
@@ -165,7 +180,7 @@ impl MetricId {
             CpuClock | GpuClock => (0.0, 20_000.0),
             CpuPower | GpuPower => (0.0, 2_000.0),
             RamUsed | RamTotal | VramUsed | VramTotal | GpuSharedMem => (0.0, 1.0e15),
-            Fps => (0.0, 10_000.0),
+            Fps | FpsLow1 | FpsLow01 => (0.0, 10_000.0),
             FrameTime => (0.0, 60_000.0),
         }
     }

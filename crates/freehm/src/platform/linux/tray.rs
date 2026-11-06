@@ -40,7 +40,7 @@ impl ksni::Tray for FreeHmTray {
     }
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let send = |a: TrayAction| move |t: &mut Self| t.sink.send(AppEvent::Tray(a));
-        vec![
+        let mut items = vec![
             StandardItem { label: "Open settings".into(), activate: Box::new(send(TrayAction::OpenSettings)), ..Default::default() }.into(),
             StandardItem {
                 label: if self.st.overlay_visible { "Hide overlay".into() } else { "Show overlay".into() },
@@ -65,7 +65,11 @@ impl ksni::Tray for FreeHmTray {
             .into(),
             MenuItem::Separator,
             StandardItem { label: "Quit FreeHM".into(), activate: Box::new(send(TrayAction::Quit)), ..Default::default() }.into(),
-        ]
+        ];
+        if let Some(label) = &self.st.update {
+            items.insert(2, StandardItem { label: label.clone(), activate: Box::new(send(TrayAction::InstallUpdate)), ..Default::default() }.into());
+        }
+        items
     }
     fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
         log::warn!("tray host went away ({reason:?}); the icon reappears when it returns");

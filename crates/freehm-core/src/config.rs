@@ -50,11 +50,19 @@ pub struct General {
     pub start_with_system: bool,
     /// Show clocks in GHz instead of MHz.
     pub clock_in_ghz: bool,
+    /// Look for a newer release on GitHub when FreeHM starts.
+    pub check_for_updates: bool,
 }
 
 impl Default for General {
     fn default() -> Self {
-        General { refresh_interval_ms: DEFAULT_REFRESH_MS, temperature_unit: TemperatureUnit::Celsius, start_with_system: true, clock_in_ghz: false }
+        General {
+            refresh_interval_ms: DEFAULT_REFRESH_MS,
+            temperature_unit: TemperatureUnit::Celsius,
+            start_with_system: true,
+            clock_in_ghz: false,
+            check_for_updates: true,
+        }
     }
 }
 
@@ -144,6 +152,8 @@ pub struct OverlayConfig {
     /// Windows draws nothing over a game in exclusive fullscreen; while a game holds its
     /// monitor that way, show the overlay on another monitor (when there is one).
     pub avoid_exclusive_fullscreen: bool,
+    /// The chosen monitor's name, to show while it is not connected.
+    pub monitor_label: String,
 }
 
 impl Default for OverlayConfig {
@@ -175,6 +185,7 @@ impl Default for OverlayConfig {
             show_on_desktop: false,
             hide_from_capture: false,
             avoid_exclusive_fullscreen: true,
+            monitor_label: String::new(),
         }
     }
 }
@@ -380,10 +391,13 @@ impl Config {
                 true
             }
         });
-        for &m in MetricId::ALL.iter() {
+        for (i, &m) in MetricId::ALL.iter().enumerate() {
             if !seen.contains(&m) {
                 notes.push(format!("metric {m:?} missing from configuration, added (disabled)"));
-                self.metrics.push(MetricEntry::new(m, false));
+                // Next to its neighbour in the default order, wherever the user moved that.
+                let after = i.checked_sub(1).and_then(|p| self.metrics.iter().position(|e| e.id == MetricId::ALL[p]));
+                let at = after.map_or(self.metrics.len(), |p| p + 1);
+                self.metrics.insert(at, MetricEntry::new(m, false));
             }
         }
         for m in &mut self.metrics {

@@ -25,7 +25,8 @@ The full comparison of the alternatives considered is in [ARCHITECTURE.md](ARCHI
 
 ## 2. Major features (implemented)
 
-* **Metrics:** CPU, GPU, RAM, VRAM, FPS and frame time, each one selectable.
+* **Metrics:** CPU, GPU, RAM, VRAM, FPS, frame rate 1% and 0.1% lows, and frame time, each one selectable.
+* **Updates:** FreeHM looks for a new release when it starts. The Windows installer version asks first, an AppImage replaces itself, and anything else gets a link. See [SECURITY.md](SECURITY.md#network-use).
 * **Honest readings:**
   * Every reading carries a freshness state (fresh / cached / stale / unavailable) and a reason when it is missing.
   * Nothing is ever fabricated.
@@ -85,6 +86,7 @@ Linux on every change. The table and method are in TESTING.md (Accuracy).
   * API-level events take precedence over kernel events, so no frame is counted twice.
   * **Frame time** is the mean interval between presents over the last 250 ms.
   * **FPS** is the number of present intervals in the last second divided by their span.
+  * **1% and 0.1% lows** are the average of the slowest 1% or 0.1% of the present intervals in the last 60 s, shown as FPS, and unavailable below 100 and 1000 intervals. Tools define lows differently, so these numbers need not match another tool's.
 * **Verified in CI:**
   * Against a real D3D11 swap chain, the helper and the presenter's own count agree: 61.2 vs 61.0 FPS.
   * The full app → helper → overlay path reported 57–62 FPS, Fresh, for the detected test "game".

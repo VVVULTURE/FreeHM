@@ -10,7 +10,7 @@
 * Ship or load a kernel driver of its own. The optional PawnIO driver is installed by the
   user from its own project.
 * Read keyboard devices (no evdev access). Shortcuts use the OS's registration APIs.
-* Contact the network.
+* Use the network for anything but its own updates (see [Network use](#network-use)).
 
 ## Privilege map
 
@@ -24,6 +24,32 @@
 Routine actions (start, show/hide, every settings change, changing the shortcut,
 autostart on/off) never request elevation. Autostart uses the per-user `Run` key or the XDG
 autostart directory.
+
+## Network use
+
+Only `crates/freehm/src/updater.rs` uses the network. The helper service never does.
+
+* **The check:** an HTTPS request to
+  `api.github.com/repos/VVVULTURE/FreeHM/releases/latest` a few seconds after FreeHM starts
+  (again after 1 and 5 minutes if it fails), or when the user clicks *Check for updates*. It
+  sends FreeHM's version in the `User-Agent` header and no identifier. GitHub sees the
+  address it came from, as with any request.
+* **The switch:** *Check for updates when FreeHM starts* (`general.check_for_updates`) stops
+  the automatic check. A click on *Check for updates* still works.
+* **The download:** happens after the user clicks Install, or by itself for an AppImage.
+* **What is trusted:** a release is used only when its page and all its files are on this
+  repository's release addresses. Every file is downloaded over HTTPS, with a size limit, and
+  must match its SHA-256 in the release's `SHA256SUMS.txt`, or it is deleted. That catches a
+  damaged or swapped download. It does not protect against someone able to publish to this
+  repository, because the checksums come from the same place. Releases are not code-signed.
+* **Elevation:** FreeHM stays unelevated. The installer it starts asks Windows for
+  administrator rights itself, for an install for all users. An install for one user needs
+  none. An AppImage replaces its own file, with the user's own rights.
+* **During a game:** nothing is installed or restarted, and no notification is shown.
+* **Test hooks:** `FREEHM_UPDATE_URL` replaces the address, allows plain HTTP and accepts
+  files anywhere, and `FREEHM_UPDATE_CURRENT` pretends to be another version. They exist so
+  that tests run the exact binary that is released. Setting them takes code already running
+  as that user, which could do the same harm anyway.
 
 ## Windows helper service (`freehm-helper.exe`)
 

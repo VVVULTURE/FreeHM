@@ -14,6 +14,7 @@ pub mod metrics;
 pub mod policy;
 pub mod render;
 pub mod telemetry;
+pub mod update;
 pub mod wire;
 
 pub const APP_NAME: &str = "FreeHM";

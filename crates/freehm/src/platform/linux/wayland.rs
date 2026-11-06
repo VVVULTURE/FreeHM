@@ -68,8 +68,12 @@ impl State {
             let (lx, ly) = info.logical_position.unwrap_or(info.location);
             // Physical pixels: the logical size times the (integer) buffer scale we render at.
             let (lw, lh) = info.logical_size.unwrap_or((pw / scale, ph / scale));
+            let known = |s: &String| !s.is_empty() && !s.eq_ignore_ascii_case("unknown");
+            let label = [&info.make, &info.model].into_iter().filter(|s| known(s)).map(String::as_str).collect::<Vec<_>>().join(" ");
             v.push(MonitorInfo {
                 name: info.name.clone().unwrap_or_else(|| format!("wayland-{}", info.id)),
+                id: String::new(),
+                label,
                 primary: i == 0, // Wayland has no "primary" output; the first one stands in
                 x: lx * scale,
                 y: ly * scale,

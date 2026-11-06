@@ -5,7 +5,7 @@
 use crate::app::compute_placement;
 use eframe::egui;
 use freehm_core::config::{Anchor, Config, FontChoice, FontWeight, MonitorChoice};
-use freehm_core::ipc::MonitorInfo;
+use freehm_core::ipc::{MonitorInfo, find_monitor};
 use freehm_core::metrics::Snapshot;
 use freehm_core::render::{Renderer, Row, Style, build_rows};
 use freehm_core::telemetry::{Engine, MetricSet, PollRequest, mock::MockProvider};
@@ -135,13 +135,13 @@ impl Preview {
         ui.add_space(10.0);
         ui.label(egui::RichText::new("Position").strong());
         let mon = match &cfg.overlay.monitor {
-            MonitorChoice::Named(n) => monitors.iter().find(|m| &m.name == n),
+            MonitorChoice::Named(n) => find_monitor(monitors, n, &cfg.overlay.monitor_label),
             MonitorChoice::Primary => None,
         }
         .or_else(|| monitors.iter().find(|m| m.primary))
         .or_else(|| monitors.first())
         .cloned()
-        .unwrap_or(MonitorInfo { name: "Example 1920×1080".into(), primary: true, x: 0, y: 0, width: 1920, height: 1080, scale: 1.0 });
+        .unwrap_or(MonitorInfo { name: "Example 1920×1080".into(), primary: true, width: 1920, height: 1080, scale: 1.0, ..Default::default() });
         // The overlay at the monitor's own scale (it may differ from this window's).
         let (ow, oh) = (self.tex_px.0 as f32 / ppp * mon.scale, self.tex_px.1 as f32 / ppp * mon.scale);
         let (owp, ohp) = (ow.round() as u32, oh.round() as u32);
@@ -208,7 +208,7 @@ impl Preview {
         }
         let place = compute_placement(&mon, cfg, owp, ohp);
         self.logical_pos = Some(((place.x - mon.x) as f32 / mon.scale, (place.y - mon.y) as f32 / mon.scale));
-        ui.weak(format!("{} — {}×{} at {:.0} % scale", mon.name, mon.width, mon.height, mon.scale * 100.0));
+        ui.weak(format!("{} — {}×{} at {:.0} % scale", mon.display_name(), mon.width, mon.height, mon.scale * 100.0));
         ui.weak("Drag the green box to move the overlay; it snaps to the corners and edges.");
     }
 }

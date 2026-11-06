@@ -7,9 +7,22 @@
 //! (`IDXGISwapChain::SetFullscreenState`), as games with an "exclusive fullscreen" option do;
 //! `--blt` uses the legacy bit-block-transfer swap effect instead of flip model. `--native`
 //! covers the primary monitor at its current resolution and refresh rate (no display mode
-//! change, like most games); `--hz N` asks for a different refresh rate.
+//! change, like most games); `--hz N` asks for a different refresh rate. `--stutter N:MS`
+//! stalls for MS milliseconds every N frames.
 //!
-//! Usage: present_loop [seconds] [--fullscreen] [--blt] [--native] [--hz N]
+//! Every two seconds it prints the 1% and 0.1% lows of its own frames over the last 60 s,
+//! computed here on purpose rather than with FreeHM's code, to compare FreeHM's readings with.
+//!
+//! Usage: present_loop [seconds] [--fullscreen] [--blt] [--native] [--hz N] [--stutter N:MS]
+
+/// Average of the slowest `percent` % of `frame_times` (seconds), as a frame rate.
+#[cfg(windows)]
+fn low(frame_times: &[f64], percent: f64) -> f64 {
+    let mut sorted = frame_times.to_vec();
+    sorted.sort_by(|a, b| b.total_cmp(a));
+    let n = ((sorted.len() as f64 * percent / 100.0).ceil() as usize).max(1);
+    n as f64 / sorted[..n].iter().sum::<f64>()
+}
 
 #[cfg(windows)]
 fn main() -> windows::core::Result<()> {
@@ -38,6 +51,10 @@ fn main() -> windows::core::Result<()> {
     let blt = args.iter().any(|a| a == "--blt");
     let native = args.iter().any(|a| a == "--native");
     let hz: Option<u32> = args.iter().position(|a| a == "--hz").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok());
+    let stutter: Option<(u64, u64)> = args.iter().position(|a| a == "--stutter").and_then(|i| args.get(i + 1)).and_then(|s| {
+        let (every, ms) = s.split_once(':')?;
+        Some((every.parse().ok()?, ms.parse().ok()?))
+    });
     // The current display mode of the primary monitor.
     let mut mode =
         windows::Win32::Graphics::Gdi::DEVMODEW { dmSize: std::mem::size_of::<windows::Win32::Graphics::Gdi::DEVMODEW>() as u16, ..Default::default() };
@@ -138,6 +155,8 @@ fn main() -> windows::core::Result<()> {
         let mut frames = 0u64;
         let mut last_hr = windows::core::HRESULT(0);
         let mut msg = MSG::default();
+        let mut times: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
+        let mut next_report = Instant::now() + Duration::from_secs(2);
         while start.elapsed() < Duration::from_secs(secs) {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 let _ = TranslateMessage(&msg);
@@ -162,6 +181,21 @@ fn main() -> windows::core::Result<()> {
                 last_hr = hr;
             }
             frames += 1;
+            let now = Instant::now();
+            times.push_back(now);
+            while times.front().is_some_and(|t| now - *t > Duration::from_secs(60)) {
+                times.pop_front();
+            }
+            if now >= next_report && times.len() > 1 {
+                next_report = now + Duration::from_secs(2);
+                let ft: Vec<f64> = times.iter().zip(times.iter().skip(1)).map(|(a, b)| (*b - *a).as_secs_f64()).collect();
+                println!("lows: frames={} low1={:.2} low01={:.2}", ft.len(), low(&ft, 1.0), low(&ft, 0.1));
+            }
+            if let Some((every, ms)) = stutter
+                && frames.is_multiple_of(every)
+            {
+                std::thread::sleep(Duration::from_millis(ms));
+            }
         }
         println!("presented {frames} frames ({:.1} fps)", frames as f64 / start.elapsed().as_secs_f64());
         if fullscreen {

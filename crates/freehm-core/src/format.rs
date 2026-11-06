@@ -70,7 +70,7 @@ pub fn format_value(metric: MetricId, v: f64, cfg: &Config, total: Option<f64>) 
                 _ => (fixed(v / div, dec), unit.into()),
             }
         }
-        Fps => (fixed(v, 0), String::new()),
+        Fps | FpsLow1 | FpsLow01 => (fixed(v, 0), String::new()),
         FrameTime => (fixed(v, 1), "ms".into()),
     }
 }

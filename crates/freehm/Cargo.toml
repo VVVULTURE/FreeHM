@@ -17,11 +17,16 @@ serde_json.workspace = true
 log.workspace = true
 libloading = "0.9"
 fontdb = "0.24"
+sha2 = "0.10"
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "accesskit", "wayland", "x11"] }
+
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3.5.1", default-features = false, features = ["native-tls-no-default"] }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
 features = [
+    "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi",
@@ -61,6 +66,9 @@ rustix = { version = "1.1", features = ["event", "pipe", "fs", "net", "process"]
 # No tokio: ksni and zbus run on async-io in their own threads.
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+# Certificates come from the system; ureq's own `rustls` feature would bundle a root list.
+ureq = { version = "3.5.1", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [build-dependencies]
 winresource = "0.1"

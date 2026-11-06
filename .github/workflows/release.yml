@@ -2,8 +2,9 @@ name: Release
 
 # Builds FreeHM for Windows 11 (x64) and Linux (x86_64) and publishes a GitHub release.
 #
-# - Push a tag `vX.Y.Z` (matching the app version, `version` in the workspace Cargo.toml) to publish
-#   release X.Y.Z. Tags with a suffix (`v0.2.0-rc1`) become pre-releases.
+# - Raise `version` in the workspace Cargo.toml and push to main: when it is above every
+#   existing tag, release X.Y.Z is published and tagged `vX.Y.Z`. Other pushes publish nothing.
+#   A version with a suffix (`0.2.0-rc1`) becomes a pre-release, which the updater ignores.
 # - Run it by hand (Actions > Release > Run workflow) for a dry run: everything is built
 #   and tested and the files are kept as workflow artifacts, but nothing is published.
 #
@@ -12,11 +13,16 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Two quick pushes must not both publish: the second sees the first one's tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   version:
@@ -24,6 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
     steps:
       - uses: actions/checkout@v5
       - id: v
@@ -32,20 +39,22 @@ jobs:
           V=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="freehm") | .version')
           [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::could not read the app version (got '$V')"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            TAG=${GITHUB_REF#refs/tags/v}
-            # The tag may add a pre-release suffix, but its X.Y.Z must be the app's version.
-            [ "${TAG%%-*}" = "$V" ] || { echo "::error::tag v$TAG does not match the app version $V in Cargo.toml"; exit 1; }
+          python3 tools/ci/should-publish.py --self-test
+          PUBLISH=false
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            PUBLISH=$(git ls-remote --tags --refs origin 'v*' | python3 tools/ci/should-publish.py "$V")
           fi
-          echo "FreeHM $V"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "FreeHM $V, publish: $PUBLISH"
 
   ci:
     name: CI
     needs: version
+    if: needs.version.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/ci.yml
 
   package:
-    name: Portable archives and checksums
+    name: Release files and checksums
     needs: [version, ci]
     runs-on: ubuntu-24.04
     steps:
@@ -59,10 +68,6 @@ jobs:
           mkdir -p release
           cp artifacts/windows-installer/*.exe release/
           cp artifacts/linux-packages/*.deb artifacts/linux-packages/*.AppImage release/
-          # Portable Windows archive: the two executables plus licences, no installer.
-          mkdir -p "FreeHM-$V-windows-x64-portable"
-          cp -r artifacts/windows-binaries/. "FreeHM-$V-windows-x64-portable/"
-          (cd "FreeHM-$V-windows-x64-portable" && zip -qr "../release/FreeHM-$V-windows-x64-portable.zip" .)
           # Plain Linux binary archive for distributions without .deb or AppImage support.
           mkdir -p "FreeHM-$V-linux-x86_64"
           cp -r artifacts/linux-binaries/. "FreeHM-$V-linux-x86_64/"
@@ -77,7 +82,7 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.version.outputs.publish == 'true'
     needs: [version, package]
     runs-on: ubuntu-24.04
     permissions:
@@ -89,11 +94,13 @@ jobs:
           path: release
       - uses: softprops/action-gh-release@v2
         with:
-          name: FreeHM ${{ github.ref_name }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: FreeHM v${{ needs.version.outputs.version }}
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}
           generate_release_notes: true
           body: |
-            **Windows 11 (x64):** `FreeHM-${{ needs.version.outputs.version }}-windows-x64-setup.exe` (installer; run as administrator to also install the optional helper service for FPS and CPU temperature), or the portable zip.
+            **Windows 11 (x64):** `FreeHM-${{ needs.version.outputs.version }}-windows-x64-setup.exe` (installer; run as administrator to also install the optional helper service for FPS and CPU temperature).
             **Linux (x86_64):** the `.deb`, the AppImage, or the plain `.tar.gz`.
             Verify downloads against `SHA256SUMS.txt`.
           files: release/*

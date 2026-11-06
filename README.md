@@ -9,7 +9,7 @@ code into games, never reads game memory and ships no kernel driver.
 * GPU: utilisation, temperature, clock, power (NVIDIA, AMD, Intel; integrated and discrete)
 * RAM: used, utilisation, total
 * VRAM: used, utilisation, total (shared/GTT memory of integrated GPUs is labelled as such)
-* FPS and frame time (Windows; see [limitations](#known-limitations))
+* FPS, frame rate 1% and 0.1% lows, and frame time (Windows; see [limitations](#known-limitations))
 
 Every value carries its freshness and, when it cannot be read, the reason. A missing sensor
 shows `N/A`, never a made-up `0`.
@@ -24,7 +24,6 @@ Downloads are on the repository's **Releases** page:
 | File | For |
 |---|---|
 | `FreeHM-<version>-windows-x64-setup.exe` | Windows 11 installer (recommended) |
-| `FreeHM-<version>-windows-x64-portable.zip` | Windows without installing (no helper service, so no FPS or CPU temperature) |
 | `freehm_<version>-1_amd64.deb` | Debian, Ubuntu and derivatives |
 | `FreeHM-<version>-x86_64.AppImage` | Most other Linux distributions |
 | `FreeHM-<version>-linux-x86_64.tar.gz` | The plain Linux binary |
@@ -61,6 +60,21 @@ runs a one-time `pkexec` step. It adds you to a `freehm` group and installs a ud
 makes the counter readable (read-only) by that group. Log out and back in afterwards. All
 other Linux metrics need no setup.
 
+### Updates
+
+A few seconds after it starts, FreeHM asks GitHub for the latest release. If that fails, it
+tries again after 1 and 5 minutes, and that is all until the next start. A check that fails
+changes nothing else: FreeHM works the same without a network. *Check for updates when
+FreeHM starts* under *Settings ▸ About & diagnostics* turns this off.
+
+| Installed with | What happens when there is a new version |
+|---|---|
+| Windows installer | A notification. *Install now* in the settings window (or *Install FreeHM X* in the tray menu) downloads the installer, checks it against the release's `SHA256SUMS.txt` and runs it. An install for all users shows the Windows permission prompt, then FreeHM restarts. |
+| AppImage | The AppImage downloads the new one, checks it the same way, replaces itself and restarts, without asking. |
+| `.deb`, `.tar.gz`, a build from source | A notification with a link to the release. |
+
+Nothing is installed or restarted while a game is active. Pre-releases are not offered.
+
 ## Use
 
 | Action | How |
@@ -90,12 +104,15 @@ All changes apply immediately, with a live preview, and never need administrator
   (°C/°F, MHz/GHz), restore defaults.
 * **Overlay**: font (bundled Exo 2, any installed font, or a font file), size, weight,
   colours, background and overall opacity, padding/spacing, stacked, grouped or single-line layout,
-  compact labels, scale, monitor, corner presets or custom position, edge margins, and
+  compact labels, scale, monitor (listed by name, and remembered as that monitor even if
+  Windows renumbers its displays), corner presets or custom position, edge margins, and
   "hide from screen capture" (Windows). Drag the overlay on the position map to move it;
   it snaps to the corners and edges. While this page is open the real overlay is shown, so
   every change can be seen where it happens; changes are saved immediately.
 * **Metrics**: enable, reorder, rename and group each metric individually; optional
-  "used / total".
+  "used / total". *Frame rate 1% low* and *0.1% low* are off by default: each is the average
+  of the slowest 1% or 0.1% of frames in the last 60 seconds, shown as FPS, and `N/A` until
+  there are enough frames (100 and 1000).
 * **Hardware**: choose the CPU/GPU to monitor, see every sensor's state and provider.
 * **Game detection**: automatic detection on/off, "all detected games" or "selected games
   only", manual game list, exclusion list, and a "right now" panel that shows why the
@@ -103,8 +120,8 @@ All changes apply immediately, with a live preview, and never need administrator
 * **Shortcuts**: record a new shortcut. Conflicts are reported, never hidden.
 * **Startup & permissions**: start at login, helper service / sensor-access setup,
   repair and removal.
-* **About & diagnostics**: versions, providers, paths, a "copy diagnostics" button and
-  licences.
+* **About & diagnostics**: versions, updates, providers, paths, a "copy diagnostics" button
+  and licences.
 
 Settings live in `%APPDATA%\FreeHM\config.json` (Windows) or
 `$XDG_CONFIG_HOME/freehm/config.json` (Linux). They are versioned, saved atomically and
@@ -198,11 +215,13 @@ CI runs both on every change. Results from real hardware are in
 
 ## Releases
 
-Pushing a tag `vX.Y.Z` that matches the version in `Cargo.toml` runs
-`.github/workflows/release.yml`. It runs the full CI pipeline (build, tests, end-to-end
-tests and the accuracy check on Windows and Linux), then publishes a GitHub release with
-the files listed under [Install](#install). Starting the workflow by hand makes a dry run:
-everything is built and kept as workflow artifacts, and nothing is published.
+Raising `version` in the workspace `Cargo.toml` and pushing to `main` publishes that version:
+when it is above every existing tag, `.github/workflows/release.yml` runs the full CI
+pipeline (build, tests, end-to-end tests and the accuracy check on Windows and Linux), then
+publishes a GitHub release tagged `vX.Y.Z` with the files listed under [Install](#install).
+Other pushes publish nothing. A version with a suffix (`0.3.0-rc1`) becomes a pre-release,
+which FreeHM's updater ignores. Starting the workflow by hand makes a dry run: everything is
+built and kept as workflow artifacts, and nothing is published.
 
 ## Build from source
 

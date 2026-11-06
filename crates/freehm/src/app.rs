@@ -3,9 +3,12 @@
 //! [`AppEvent`]s, so no state is shared across threads.
 
 use crate::detect::{DetectorCmd, GameUpdate};
+use crate::updater::{UpdateEvent, Updater, open_url};
 use freehm_core::config::{Anchor, Config, MonitorChoice};
 use freehm_core::hotkey::Hotkey;
-use freehm_core::ipc::{AutostartStatus, GameStatus, HelperStatus, HotkeyStatus, MonitorInfo, OverlayStatus, Request, Response, Status};
+use freehm_core::ipc::{
+    AutostartStatus, GameStatus, HelperStatus, HotkeyStatus, MonitorInfo, OverlayStatus, Request, Response, Status, UpdateMethod, find_monitor,
+};
 use freehm_core::metrics::Snapshot;
 use freehm_core::policy::{self, Inputs, VisibilityState};
 use freehm_core::render::{Pixmap, Renderer, Row, Style, build_rows};
@@ -28,6 +31,7 @@ pub enum AppEvent {
     Resumed,
     /// Foreground window changed (Windows): re-assert topmost and re-check the game quickly.
     ForegroundChanged,
+    Update(UpdateEvent),
     /// The session is ending (Windows WM_ENDSESSION).
     #[cfg_attr(not(windows), allow(dead_code))]
     Quit,
@@ -39,6 +43,7 @@ pub enum TrayAction {
     ToggleOverlay,
     ToggleDetection,
     ToggleAutostart,
+    InstallUpdate,
     Quit,
 }
 
@@ -80,6 +85,8 @@ pub struct TrayState {
     pub detection_enabled: bool,
     pub autostart: bool,
     pub tooltip: String,
+    /// Menu item for an available update.
+    pub update: Option<String>,
 }
 
 /// Services the platform layer provides to the controller (all called on the UI thread).
@@ -144,6 +151,7 @@ pub struct App {
     /// The game that the "overlay cannot be seen" notification was shown for.
     exclusive_notified: Option<u32>,
     capture_excluded: bool,
+    update: Updater,
     exiting: bool,
     /// `FREEHM_PROFILE=1`: (render time, present time, redraws), logged every 50 redraws.
     profile: Option<(Duration, Duration, u32)>,
@@ -156,6 +164,7 @@ impl App {
         notes: Vec<String>,
         telemetry: TelemetryThread,
         detector: mpsc::Sender<DetectorCmd>,
+        update: Updater,
         p: &mut dyn Platform,
     ) -> App {
         let (renderer, font_note) = Renderer::new(&cfg.overlay.font, cfg.overlay.font_weight);
@@ -185,11 +194,13 @@ impl App {
             exclusive_on: None,
             exclusive_notified: None,
             capture_excluded: false,
+            update,
             exiting: false,
             profile: std::env::var_os("FREEHM_PROFILE").map(|_| (Duration::ZERO, Duration::ZERO, 0)),
         };
         p.on_config(&app.cfg);
         app.monitors = p.monitors();
+        app.remember_monitor();
         app.apply_hotkey(p);
         app.sync_autostart(p);
         app.refresh(p);
@@ -217,6 +228,7 @@ impl App {
                 self.game = g;
                 self.refresh(p);
                 self.check_exclusive(p);
+                self.update_tick(p);
             }
             AppEvent::Hotkey => self.toggle(p),
             AppEvent::HotkeyResult(r) => {
@@ -243,6 +255,7 @@ impl App {
                     c.general.start_with_system = !c.general.start_with_system;
                     let _ = self.apply_config(c, p);
                 }
+                TrayAction::InstallUpdate => self.install_update(p),
                 TrayAction::Quit => self.quit(p),
             },
             AppEvent::Ipc(req, reply) => {
@@ -252,6 +265,7 @@ impl App {
             AppEvent::DisplayChanged => {
                 self.monitors = p.monitors();
                 self.monitors_at = Instant::now();
+                self.remember_monitor();
                 self.redraw(p, true);
             }
             AppEvent::Resumed => {
@@ -268,8 +282,32 @@ impl App {
                 }
                 self.check_exclusive(p);
             }
+            AppEvent::Update(u) => {
+                self.update.handle(u);
+                self.update_tick(p);
+                self.refresh(p);
+            }
             AppEvent::Quit => self.quit(p),
         }
+    }
+
+    fn update_tick(&mut self, p: &mut dyn Platform) {
+        if self.update.tick(self.game.active.is_some(), self.cfg.general.check_for_updates, p) {
+            self.quit(p);
+        }
+    }
+
+    /// The tray menu's update item: install, or show where to get it.
+    fn install_update(&mut self, p: &mut dyn Platform) {
+        let st = self.update.status();
+        if st.method == UpdateMethod::Manual {
+            if let Some(url) = &st.page_url {
+                open_url(url);
+            }
+        } else if let Err(e) = self.update.install_now() {
+            log::warn!("cannot install the update: {e}");
+        }
+        self.refresh(p);
     }
 
     /// Called about once a second by the platform loop.
@@ -278,6 +316,7 @@ impl App {
             p.overlay_keep_on_top();
         }
         self.check_exclusive(p);
+        self.update_tick(p);
         if let Some(t) = self.settings_live_until
             && Instant::now() >= t
         {
@@ -297,6 +336,7 @@ impl App {
             self.monitors_at = Instant::now();
             if m != self.monitors {
                 self.monitors = m;
+                self.remember_monitor();
                 self.redraw(p, true);
             }
         }
@@ -364,6 +404,18 @@ impl App {
             Request::RefreshPermissions => {
                 self.telemetry.send(Command::Resume);
                 Response::Ok
+            }
+            Request::CheckForUpdate => {
+                self.update.check_now();
+                Response::Ok
+            }
+            Request::InstallUpdate => {
+                let r = self.update.install_now();
+                self.refresh(p);
+                match r {
+                    Ok(()) => Response::Ok,
+                    Err(e) => Response::Error(e),
+                }
             }
             Request::Quit => {
                 self.quit(p);
@@ -464,6 +516,7 @@ impl App {
                 Some(g) => format!("FreeHM — {}", g.name),
                 None => "FreeHM — no game detected".into(),
             },
+            update: self.update.tray_label(),
         });
         if changed {
             if self.visible {
@@ -477,11 +530,28 @@ impl App {
 
     /// The monitor chosen in the settings (primary when the chosen one is not connected).
     fn chosen_monitor(&self) -> Option<MonitorInfo> {
-        let by_name = match &self.cfg.overlay.monitor {
-            MonitorChoice::Named(n) => self.monitors.iter().find(|m| &m.name == n),
+        let chosen = match &self.cfg.overlay.monitor {
+            MonitorChoice::Named(n) => find_monitor(&self.monitors, n, &self.cfg.overlay.monitor_label),
             MonitorChoice::Primary => None,
         };
-        by_name.or_else(|| self.monitors.iter().find(|m| m.primary)).or_else(|| self.monitors.first()).cloned()
+        chosen.or_else(|| self.monitors.iter().find(|m| m.primary)).or_else(|| self.monitors.first()).cloned()
+    }
+
+    /// Keep the chosen monitor's id and name current: configurations from older versions hold
+    /// the system's name for it, which changes when Windows renumbers its monitors.
+    fn remember_monitor(&mut self) {
+        let o = &self.cfg.overlay;
+        let MonitorChoice::Named(n) = &o.monitor else { return };
+        let Some(m) = find_monitor(&self.monitors, n, &o.monitor_label) else { return };
+        if m.stored_id() == n && m.label == o.monitor_label {
+            return;
+        }
+        let (id, label) = (m.stored_id().to_string(), m.label.clone());
+        self.cfg.overlay.monitor = MonitorChoice::Named(id);
+        self.cfg.overlay.monitor_label = label;
+        if let Err(e) = self.cfg.save(&self.cfg_path) {
+            log::warn!("could not save configuration: {e}");
+        }
     }
 
     /// Where the overlay goes: the chosen monitor, unless a game holds it in exclusive
@@ -527,7 +597,9 @@ impl App {
         let ex = self.exclusive_on.as_ref()?;
         let game = self.game.active.as_ref().map(|g| g.name.as_str()).unwrap_or("A game");
         let target = self.target_monitor()?;
-        Some(if target.name == *ex {
+        let on_target = target.name == *ex;
+        let ex = self.monitors.iter().find(|m| m.name == *ex).map_or(ex.as_str(), |m| m.display_name());
+        Some(if on_target {
             let other = if self.monitors.len() < 2 {
                 ""
             } else if !self.cfg.overlay.avoid_exclusive_fullscreen {
@@ -546,7 +618,7 @@ impl App {
                 false,
                 format!(
                     "{game} uses exclusive fullscreen on {ex}, where Windows draws no other window over it, so the overlay is shown on {} instead. Borderless (windowed) fullscreen shows it over the game.",
-                    target.name
+                    target.display_name()
                 ),
             )
         })
@@ -629,6 +701,7 @@ impl App {
             autostart: p.autostart_status(),
             monitors: self.monitors.clone(),
             notes,
+            update: self.update.status().clone(),
         }
     }
 }
@@ -673,7 +746,7 @@ mod tests {
     use super::*;
 
     fn mon(x: i32, y: i32, w: u32, h: u32, scale: f32) -> MonitorInfo {
-        MonitorInfo { name: "m".into(), primary: true, x, y, width: w, height: h, scale }
+        MonitorInfo { name: "m".into(), primary: true, x, y, width: w, height: h, scale, ..Default::default() }
     }
 
     #[test]
@@ -697,7 +770,7 @@ mod tests {
 
     #[test]
     fn exclusive_fullscreen_moves_the_overlay_to_another_monitor() {
-        let named = |n: &str, primary: bool| MonitorInfo { name: n.into(), primary, x: 0, y: 0, width: 1920, height: 1080, scale: 1.0 };
+        let named = |n: &str, primary: bool| MonitorInfo { name: n.into(), primary, width: 1920, height: 1080, scale: 1.0, ..Default::default() };
         let (a, b, c) = (named("A", true), named("B", false), named("C", false));
         let all = [a.clone(), b.clone(), c.clone()];
         assert_eq!(pick_monitor(a.clone(), &all, None, true), a, "no exclusive fullscreen: the chosen monitor");

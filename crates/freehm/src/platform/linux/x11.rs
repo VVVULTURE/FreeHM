@@ -7,7 +7,7 @@
 
 use crate::app::{AppEvent, EventSink, Placement};
 use freehm_core::hotkey::{Hotkey, Key};
-use freehm_core::ipc::MonitorInfo;
+use freehm_core::ipc::{MonitorInfo, edid_monitor_name};
 use freehm_core::render::Pixmap;
 use std::sync::{Arc, Mutex};
 use x11rb::connection::Connection;
@@ -233,18 +233,35 @@ fn monitors(conn: &RustConnection, root: Window) -> Vec<MonitorInfo> {
         return vec![MonitorInfo {
             name: "screen".into(),
             primary: true,
-            x: 0,
-            y: 0,
             width: s.width_in_pixels as u32,
             height: s.height_in_pixels as u32,
             scale,
+            ..Default::default()
         }];
+    };
+    let edid = conn.intern_atom(false, b"EDID").ok().and_then(|c| c.reply().ok()).map(|r| r.atom);
+    // The name the monitor gives itself, from the first output with one.
+    let label = |outputs: &[randr::Output]| -> Option<String> {
+        outputs.iter().find_map(|&o| {
+            let r = conn.randr_get_output_property(o, edid?, AtomEnum::ANY, 0, 64, false, false).ok()?.reply().ok()?;
+            edid_monitor_name(&r.data)
+        })
     };
     r.monitors
         .iter()
         .map(|m| {
             let name = conn.get_atom_name(m.name).ok().and_then(|c| c.reply().ok()).map(|n| String::from_utf8_lossy(&n.name).into_owned()).unwrap_or_default();
-            MonitorInfo { name, primary: m.primary, x: m.x as i32, y: m.y as i32, width: m.width as u32, height: m.height as u32, scale }
+            MonitorInfo {
+                name,
+                id: String::new(),
+                label: label(&m.outputs).unwrap_or_default(),
+                primary: m.primary,
+                x: m.x as i32,
+                y: m.y as i32,
+                width: m.width as u32,
+                height: m.height as u32,
+                scale,
+            }
         })
         .collect()
 }

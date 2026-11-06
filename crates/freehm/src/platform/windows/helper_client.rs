@@ -7,6 +7,7 @@
 //! program squatting on the pipe name cannot feed it fabricated readings.
 
 use super::util::{reg_key_exists, wide};
+use freehm_core::frames::{LOW_01_MIN_FRAMES, LOW_1_MIN_FRAMES};
 use freehm_core::helper_proto::{HelperRequest, HelperResponse, MAX_REQUEST, MAX_RESPONSE, PIPE_NAME, PROTOCOL_VERSION, SERVICE_NAME, Value};
 use freehm_core::metrics::{DEVICE_GAME, DeviceInfo, MetricId};
 use freehm_core::telemetry::{PollRequest, Provider, Sample};
@@ -180,7 +181,7 @@ impl Provider for HelperProvider {
     fn poll(&mut self, req: &PollRequest, out: &mut Vec<Sample>) -> Result<(), String> {
         let m = req.metrics;
         let want_cpu = m.any_of(&[MetricId::CpuTemp, MetricId::CpuPower]);
-        let want_frames = m.any_of(&[MetricId::Fps, MetricId::FrameTime]);
+        let want_frames = m.any_of(&MetricId::FRAME_METRICS);
         if !want_cpu && !want_frames {
             return Ok(());
         }
@@ -191,7 +192,7 @@ impl Provider for HelperProvider {
             if m.contains(MetricId::CpuPower) {
                 out.push(Sample::unavailable(CPU_DEVICE, MetricId::CpuPower, why));
             }
-            for f in [MetricId::Fps, MetricId::FrameTime] {
+            for f in MetricId::FRAME_METRICS {
                 if m.contains(f) {
                     out.push(Sample::unavailable(DEVICE_GAME, f, why));
                 }
@@ -233,7 +234,7 @@ impl Provider for HelperProvider {
         }
         if want_frames {
             let push_na = |out: &mut Vec<Sample>, why: &str| {
-                for f in [MetricId::Fps, MetricId::FrameTime] {
+                for f in MetricId::FRAME_METRICS {
                     out.push(Sample::unavailable(DEVICE_GAME, f, why));
                 }
             };
@@ -249,6 +250,23 @@ impl Provider for HelperProvider {
                             Some(p) => {
                                 out.push(Sample::value(DEVICE_GAME, MetricId::Fps, p.stats.fps));
                                 out.push(Sample::value(DEVICE_GAME, MetricId::FrameTime, p.stats.frametime_ms));
+                                for (metric, value, need) in
+                                    [(MetricId::FpsLow1, p.stats.low_1_fps, LOW_1_MIN_FRAMES), (MetricId::FpsLow01, p.stats.low_01_fps, LOW_01_MIN_FRAMES)]
+                                {
+                                    out.push(match value {
+                                        Some(v) => Sample::value(DEVICE_GAME, metric, v),
+                                        None if p.stats.low_frames == 0 => Sample::unavailable(
+                                            DEVICE_GAME,
+                                            metric,
+                                            "the installed helper service is too old to report lows; repair it in Startup & permissions",
+                                        ),
+                                        None => Sample::unavailable(
+                                            DEVICE_GAME,
+                                            metric,
+                                            format!("needs {need} frames in the last 60 s, {} so far", p.stats.low_frames),
+                                        ),
+                                    });
+                                }
                             }
                             None => push_na(out, "the game has not presented any frames in the last two seconds"),
                         }

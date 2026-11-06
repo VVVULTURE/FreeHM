@@ -11,6 +11,7 @@ mod paths;
 mod platform;
 mod sensors;
 mod settings;
+mod updater;
 
 use freehm_core::config::Config;
 use freehm_core::ipc::{Request, Response};
@@ -26,6 +27,8 @@ Usage: freehm [command]
   --show | --hide  Force the overlay on/off until the active game changes
   --quit           Quit the running instance
   --status         Print the running instance's status as JSON
+  --check-update   Ask the running instance to look for a newer release now
+  --install-update Ask the running instance to install the newer release it found
   --apply-config FILE
                    Validate a configuration file (same format as config.json; missing
                    fields take their defaults), apply it to the running instance and save it
@@ -114,13 +117,15 @@ fn main() {
             logging::init(&paths::log_dir().join("settings.log"), false);
             settings::run()
         }
-        "--toggle" | "--show" | "--hide" | "--quit" | "--status" => {
+        "--toggle" | "--show" | "--hide" | "--quit" | "--status" | "--check-update" | "--install-update" => {
             attach_console();
             let req = match cmd {
                 "--toggle" => Request::ToggleOverlay,
                 "--show" => Request::SetOverlayVisible(true),
                 "--hide" => Request::SetOverlayVisible(false),
                 "--quit" => Request::Quit,
+                "--check-update" => Request::CheckForUpdate,
+                "--install-update" => Request::InstallUpdate,
                 _ => Request::GetStatus { live: false, show_overlay: false },
             };
             match send(req) {
@@ -147,6 +152,14 @@ fn main() {
         "--setup-permissions" | "--remove-permissions" => {
             attach_console();
             platform::linux::permissions::cli(cmd, &args[1..])
+        }
+        // An AppImage that replaced itself starts the new file with this.
+        #[cfg(target_os = "linux")]
+        "--restart-after" => {
+            if let Some(pid) = args.get(1).and_then(|p| p.parse().ok()) {
+                updater::wait_for_exit(pid);
+            }
+            run_background("--background")
         }
         "" | "--background" | "--mock" => run_background(cmd),
         other => {

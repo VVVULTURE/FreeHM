@@ -521,7 +521,7 @@ impl Provider for NoFramesProvider {
     }
     fn poll(&mut self, req: &PollRequest, out: &mut Vec<Sample>) -> Result<(), String> {
         const WHY: &str = "not available on Linux without loading code into the game (FreeHM does not); the game's own counter or MangoHud, a Vulkan/OpenGL layer, can show it";
-        for m in [MetricId::Fps, MetricId::FrameTime] {
+        for m in MetricId::FRAME_METRICS {
             if req.metrics.contains(m) {
                 out.push(Sample::unavailable(DEVICE_GAME, m, WHY));
             }
