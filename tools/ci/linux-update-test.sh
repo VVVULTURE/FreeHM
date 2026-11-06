@@ -114,7 +114,10 @@ rm "$WEB/release.json"
 [ -x "$DIR/FreeHM.AppImage" ] || fail "the new AppImage is not executable"
 [ ! -e "$DIR/.FreeHM-update.AppImage" ] || fail "the download was left behind"
 pass "the AppImage replaced itself"
-wait_for 20 "the new version to start" pgrep -f "FreeHM.AppImage --restart-after|--restart-after"
+wait_for 20 "the new version to start" pgrep -f -- "--restart-after"
+# The old instance answers until it has quit; it is the new one that must answer.
+old_gone() { ! kill -0 "$APP" 2>/dev/null; }
+wait_for 20 "the old version to quit" old_gone
 wait_for 30 "the new version to answer" "$BIN" --status
 [ "$("$BIN" --status | jq -r .update.method)" = AppImage ] || fail "the restarted copy is not the AppImage"
 pass "the AppImage restarted as the new file"
