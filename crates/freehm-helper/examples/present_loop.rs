@@ -182,7 +182,9 @@ fn main() -> windows::core::Result<()> {
             }
             frames += 1;
             let now = Instant::now();
-            times.push_back(now);
+            if hr.is_ok() {
+                times.push_back(now);
+            }
             while times.front().is_some_and(|t| now - *t > Duration::from_secs(60)) {
                 times.pop_front();
             }
