@@ -144,8 +144,7 @@ if (Test-Path $pl) {
     $null = $fs.WaitForExit(20000)
     $fsLog = Get-Content "$Out\present-fullscreen.txt" -Raw
     if ($fsLog -notmatch "still exclusive fullscreen at the end: true") {
-        # GitHub's Windows runners have dropped a presenter out of exclusive mode within 0.2 s
-        # since November 2026 (with the same code that kept it before).
+        # Some of GitHub's Windows runners drop a presenter out of exclusive mode within 0.2 s.
         Write-Host "note: exclusive fullscreen could not be held on this machine; check skipped:`n$fsLog"
     } elseif ($s.overlay.warning -notmatch "exclusive fullscreen") {
         Fail "exclusive fullscreen not reported (game: $($s.game.active.name), foreground: $($s.game.foreground.name), warning: $($s.overlay.warning)):`n$fsLog"
@@ -246,10 +245,12 @@ if ($Helper) {
             try { $s2 = Status } catch { continue }
             $fps = $s2.snapshot.readings | Where-Object { $_.metric -eq "Fps" -and $null -ne $_.value } | Select-Object -First 1
         }
-        # The 1% and 0.1% lows, against the presenter's own measurement of the same frames.
+        # The 1% and 0.1% lows, against the presenter's own measurement. Both must span the same
+        # 60 s: a 0.1% low rests on a few frames, so one stall outside the other's window shows.
         $reading = { param($id) $s2.snapshot.readings | Where-Object { $_.metric -eq $id -and $null -ne $_.value } | Select-Object -First 1 }
         $low1 = $null; $low01 = $null
-        for ($i = 0; $i -lt 70 -and -not ($low1 -and $low01); $i++) {
+        $counting = Get-Date
+        while (((Get-Date) - $counting).TotalSeconds -lt 66) {
             Start-Sleep -Seconds 1
             try { $s2 = Status } catch { continue }
             $low1 = & $reading "FpsLow1"; $low01 = & $reading "FpsLow01"
@@ -258,7 +259,7 @@ if ($Helper) {
         $own = [regex]::Match((Get-Content "$Out\present-loop.txt" -Tail 3 | Out-String), "lows: frames=(\d+) low1=([\d.]+) low01=([\d.]+)")
         & $exe --quit | Out-Null; $null = $app2.WaitForExit(10000)
         if ($fps) {
-            if (-not ($low1 -and $low01)) { Fail "no lows after 70 s: $(($s2.snapshot.readings | Where-Object { $_.metric -like 'FpsLow*' } | ForEach-Object { "$($_.metric): $($_.reason)" }) -join '; ')" }
+            if (-not ($low1 -and $low01)) { Fail "no lows after 66 s: $(($s2.snapshot.readings | Where-Object { $_.metric -like 'FpsLow*' } | ForEach-Object { "$($_.metric): $($_.reason)" }) -join '; ')" }
             if (-not $own.Success) { Fail "the presenter reported no lows" }
             foreach ($c in @(@("1%", $low1.value, [double]$own.Groups[2].Value), @("0.1%", $low01.value, [double]$own.Groups[3].Value))) {
                 $off = [math]::Abs($c[1] - $c[2]) / $c[2]
