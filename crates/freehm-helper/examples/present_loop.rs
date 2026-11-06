@@ -175,13 +175,14 @@ fn main() -> windows::core::Result<()> {
             let t = start.elapsed().as_secs_f32();
             ctx.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
             ctx.ClearRenderTargetView(rtv, &[0.5 + 0.5 * t.sin(), 0.3, 0.5 + 0.5 * t.cos(), 1.0]);
+            // Frames are timed where ETW's Present_Start event is, before Present blocks.
+            let now = Instant::now();
             let hr = sc.Present(1, DXGI_PRESENT(0));
             if hr != last_hr {
                 println!("{:.2} s: Present returned {hr:?}", start.elapsed().as_secs_f32());
                 last_hr = hr;
             }
             frames += 1;
-            let now = Instant::now();
             if hr.is_ok() {
                 times.push_back(now);
             }
