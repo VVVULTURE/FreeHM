@@ -337,22 +337,32 @@ Both are unit-tested.
 
 ### CPU clock on CI machines
 
-Most of GitHub's Linux runners have no `cpufreq`, so `CpuClock` is usually skipped there. One in
-six do (4 of 24 in a probe), and the first time a run landed on one, the check failed: FreeHM
-2,143 MHz against 2,533 MHz, and 1,920 against 2,488 under load. Both sides read the same file
-with the same formula. The probe measured the sensor itself on those runners:
+**CI does not confirm the Linux CPU clock.** Most of GitHub's Linux runners have no `cpufreq`, and
+on the rest (16 of 94 across three probes) the file cannot judge a reading.
 
-| CPU | After sleeping | Right after 5 ms of work | One read ranges over |
+A run on one of those failed the check: FreeHM 2,143 MHz against 2,533 MHz, and 1,920 against
+2,488 under load, though both sides read the same file with the same formula. To find which side
+was wrong, run 42336438143 read the file three ways at once on 8 such runners, over 64 phases of
+30 samples each: the check, FreeHM, and a second plain reader with no connection to FreeHM.
+
+| Pair | Mean difference | Largest | Over 10% apart |
 |---|---|---|---|
-| Xeon 6973P-C | 2,605 MHz | 2,893 MHz | 800–4,039 MHz |
-| Xeon 8573C | 2,315 MHz | 2,777 MHz | 800–3,618 MHz |
-| Xeon 8370C | 1,814 MHz | 2,074 MHz | 800–3,141 MHz |
-| Xeon 8370C (second runner) | 1,906 MHz | 2,200 MHz | 800–3,167 MHz |
+| FreeHM and the check's reader | 384 MHz | 1,121 MHz | 41 of 64 |
+| The two plain readers, no FreeHM involved | 388 MHz | 1,150 MHz | 39 of 64 |
+| FreeHM and the second reader | 363 MHz | 1,453 MHz | 41 of 64 |
 
-So the reading depends on whether the CPU has just been working. FreeHM reads on a timer, while
-the check read right after talking to FreeHM. The check now reads first, after sleeping, as
-FreeHM does, and its clock tolerance also covers three standard errors of the difference, so a
-steady clock is still held to 10%. That changed check has not yet run on one of these machines.
+Two plain readers of one file disagree as much as FreeHM and a reader do, so the difference
+belongs to the file on these machines, not to FreeHM. It also reads 11-20% higher right after 5 ms
+of work (run 42335103902), so the check now reads before it talks to FreeHM, as FreeHM reads after
+sleeping on its timer.
+
+The clock is compared only when neither side's reads swing by more than the 10% tolerance, and
+otherwise reports SKIP with the size of the swing. None of the 64 phases passed that test, so on
+these runners the clock is always skipped. Both sides count: in 4 phases only the reference looked
+steady, and in 3 of those FreeHM and the reference were still 560-899 MHz apart.
+
+A first attempt widened the tolerance by three standard errors instead. It still failed one
+runner in four (2,002 against 3,143 MHz, tolerance 405), which is what led to the experiment above.
 
 ## Exclusive fullscreen (Windows)
 
@@ -421,6 +431,7 @@ been measured over a real game.
 These have **not** been verified. Treat them as unknown:
 
 * **More real games**: only one DXGI game (Geometry Dash) has been compared with PresentMon; D3D9, OpenGL and Vulkan games are untested.
+* **CPU clock on Linux**: no CI machine can confirm it (see CPU clock on CI machines). It reads the same file as a plain reader and agrees with one as closely as two plain readers agree, and it needs a check on a real Linux PC.
 * **Lows against PresentMon or in a real game**: lows have only been compared with the test presenter's own measurement.
 * **The administrator prompt during an update**: CI machines show none, and the test on the developer PC used an install for one user. Saying No to the prompt was simulated with an installer that fails.
 * **Update notifications on screen**: clicking the Windows notification, the tray menu's update item, and Linux notifications on a real desktop.

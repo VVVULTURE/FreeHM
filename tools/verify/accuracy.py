@@ -13,7 +13,8 @@ the same quantities straight from the kernel or vendor tools:
   GPU (NVIDIA)     nvidia-smi
 
 The means over all samples are compared, each against a stated tolerance. A metric with
-no independent source on this machine is reported as SKIP, never as PASS. The script only
+no independent source on this machine is reported as SKIP, never as PASS, and so is a CPU
+clock too unsteady to compare (docs/TESTING.md, "CPU clock on CI machines"). The script only
 reads files and sockets in-process while sampling the CPU, so it does not load the CPU
 right when FreeHM samples it; nvidia-smi runs in a separate phase afterwards.
 Exit code 1 if anything FAILs.
@@ -26,7 +27,7 @@ two reads milliseconds apart.
 
 Usage: tools/verify/accuracy.py [--samples 40] [--json out.json] [--load]
 """
-import argparse, glob, json, math, os, shutil, socket, statistics, struct, subprocess, sys, time
+import argparse, glob, json, os, shutil, socket, statistics, struct, subprocess, sys, time
 
 MiB = 1024 * 1024
 
@@ -220,12 +221,14 @@ def main():
         mf = statistics.mean(p[0] for p in pairs)
         mr = statistics.mean(p[1] for p in pairs)
         tol = max(abs_tol, rel_tol * abs(mr))
-        if metric.startswith("CpuClock"):
-            # One read can swing between the minimum and turbo (800-4000 MHz on CI's Xeons),
-            # so two means of a few reads differ by chance: allow three standard errors of
-            # that difference. A steady clock keeps the tolerance above.
-            spread = statistics.pstdev(p[0] for p in pairs) ** 2 + statistics.pstdev(p[1] for p in pairs) ** 2
-            tol = max(tol, 3 * math.sqrt(spread / len(pairs)))
+        swing = max(statistics.pstdev(p[0] for p in pairs), statistics.pstdev(p[1] for p in pairs))
+        if metric.startswith("CpuClock") and swing > tol:
+            # On CI's Xeons two plain readers of this file, with no FreeHM involved, disagree
+            # as much as FreeHM and a reader do, so the file cannot judge. Both sides count:
+            # the reference alone can look steady while the file still swings.
+            note = f"{src}: reads swing by {swing:,.0f} MHz, too unsteady to compare"
+            results.append({"metric": metric, "reference": note, "result": "SKIP", "n": len(pairs)})
+            continue
         ok = abs(mf - mr) <= tol
         failed |= not ok
         results.append({"metric": metric, "reference": src, "result": "PASS" if ok else "FAIL", "freehm": mf, "ref": mr, "diff": abs(mf - mr), "tolerance": tol, "n": len(pairs)})
@@ -245,7 +248,7 @@ def main():
         print("accuracy check FAILED")
         sys.exit(1)
     passed = sum(r["result"] == "PASS" for r in results)
-    print(f"accuracy check passed ({passed} checks, {len(results) - passed} skipped: no independent source here)")
+    print(f"accuracy check passed ({passed} checks, {len(results) - passed} skipped: no usable independent source here)")
 
 
 if __name__ == "__main__":
