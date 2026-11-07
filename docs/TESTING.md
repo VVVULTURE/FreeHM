@@ -338,7 +338,7 @@ Both are unit-tested.
 ### CPU clock on CI machines
 
 **CI does not confirm the Linux CPU clock.** Most of GitHub's Linux runners have no `cpufreq`, and
-on the rest (16 of 94 across three probes) the file cannot judge a reading.
+on the rest (26 of 134 across four runs) the file cannot judge a reading.
 
 A run on one of those failed the check: FreeHM 2,143 MHz against 2,533 MHz, and 1,920 against
 2,488 under load, though both sides read the same file with the same formula. To find which side
@@ -360,6 +360,9 @@ The clock is compared only when neither side's reads swing by more than the 10% 
 otherwise reports SKIP with the size of the swing. None of the 64 phases passed that test, so on
 these runners the clock is always skipped. Both sides count: in 4 phases only the reference looked
 steady, and in 3 of those FreeHM and the reference were still 560-899 MHz apart.
+
+Run 42337088441 ran the changed check on 40 runners. All passed: the 10 with `cpufreq` skipped the
+clock, with swings of 524-1,030 MHz, and the other 30 had no clock to compare.
 
 A first attempt widened the tolerance by three standard errors instead. It still failed one
 runner in four (2,002 against 3,143 MHz, tolerance 405), which is what led to the experiment above.
