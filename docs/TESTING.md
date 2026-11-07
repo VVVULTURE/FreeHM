@@ -152,6 +152,13 @@ by hand, because the per-user uninstaller would ask for rights to remove the hel
 | New version started | 4 s after the download |
 | Defender | no new detection in `Get-MpThreatDetection` or `Get-MpThreat`, and nothing in its event log |
 
+The test was then repeated against the published v0.2.0, with the only test setting being a
+pretend older version. So it took the path every user takes: GitHub's latest release, the check
+that the release belongs to this project, and the published installer. It found 0.2.0, updated,
+restarted and caused no new Defender detection. Without the pretend version, 0.2.0 reports itself
+as the latest version. In that repeat the script looked for the settings window closing too early,
+so that step rests on the first run.
+
 This is one PC. Defender's verdict can differ elsewhere, and FreeMic, a different unsigned
 program, was flagged on this same PC when it saved a downloaded file.
 
@@ -179,6 +186,8 @@ person who reported the bug was:
   after about 4 s.
 * The Monitor list showed `PG27QRT1B — 2560×1440 (Primary)` and `E2411K — 1920×1080`. Choosing
   E2411K moved the overlay to it, and the choice survived a restart.
+* The drag was repeated with the published v0.2.0 installer and a clean configuration, which
+  is the reported scenario: the overlay moved to 1108,579 and the position was saved.
 * Windows renumbered the same two monitors from `DISPLAY1`/`DISPLAY2` to `DISPLAY7`/`DISPLAY8`
   during that day, which is why the choice stores the monitor's device path. Finding a monitor
   after renumbering is covered by unit tests; it was not done on screen.
@@ -325,6 +334,25 @@ The engine also refuses to display values that cannot be right:
 * memory "used" larger than that device's total.
 
 Both are unit-tested.
+
+### CPU clock on CI machines
+
+Most of GitHub's Linux runners have no `cpufreq`, so `CpuClock` is usually skipped there. One in
+six do (4 of 24 in a probe), and the first time a run landed on one, the check failed: FreeHM
+2,143 MHz against 2,533 MHz, and 1,920 against 2,488 under load. Both sides read the same file
+with the same formula. The probe measured the sensor itself on those runners:
+
+| CPU | After sleeping | Right after 5 ms of work | One read ranges over |
+|---|---|---|---|
+| Xeon 6973P-C | 2,605 MHz | 2,893 MHz | 800–4,039 MHz |
+| Xeon 8573C | 2,315 MHz | 2,777 MHz | 800–3,618 MHz |
+| Xeon 8370C | 1,814 MHz | 2,074 MHz | 800–3,141 MHz |
+| Xeon 8370C (second runner) | 1,906 MHz | 2,200 MHz | 800–3,167 MHz |
+
+So the reading depends on whether the CPU has just been working. FreeHM reads on a timer, while
+the check read right after talking to FreeHM. The check now reads first, after sleeping, as
+FreeHM does, and its clock tolerance also covers three standard errors of the difference, so a
+steady clock is still held to 10%. That changed check has not yet run on one of these machines.
 
 ## Exclusive fullscreen (Windows)
 

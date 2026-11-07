@@ -26,7 +26,7 @@ two reads milliseconds apart.
 
 Usage: tools/verify/accuracy.py [--samples 40] [--json out.json] [--load]
 """
-import argparse, glob, json, os, shutil, socket, statistics, struct, subprocess, sys, time
+import argparse, glob, json, math, os, shutil, socket, statistics, struct, subprocess, sys, time
 
 MiB = 1024 * 1024
 
@@ -155,9 +155,11 @@ def main():
     rows += cpu_window(app, "", 12, efile)
     for _ in range(a.samples):
         time.sleep(0.5)
+        # Before talking to FreeHM: scaling_cur_freq reads 11-20 % higher right after work
+        # (measured on CI's Xeons), and FreeHM reads it on a timer, after sleeping.
+        clock = cpu_clock()
         f = app.readings()
-        r = {"f": f}
-        r["cpu_clock"] = cpu_clock()
+        r = {"f": f, "cpu_clock": clock}
         if tfile:
             r["cpu_temp"] = int(read(tfile)) / 1000
         r["ram_total"], r["ram_used"] = meminfo()
@@ -170,8 +172,9 @@ def main():
         rows += cpu_window(app, "@load", 12, efile)
         for _ in range(a.samples):
             time.sleep(0.5)
+            clock = cpu_clock()
             f = app.readings()
-            rows.append({"f": {"CpuClock@load": f["CpuClock"]} if "CpuClock" in f else {}, "cpu_clock_load": cpu_clock()})
+            rows.append({"f": {"CpuClock@load": f["CpuClock"]} if "CpuClock" in f else {}, "cpu_clock_load": clock})
         load.kill()
     # Phase 2: NVIDIA GPU through nvidia-smi.
     if shutil.which("nvidia-smi"):
@@ -217,6 +220,12 @@ def main():
         mf = statistics.mean(p[0] for p in pairs)
         mr = statistics.mean(p[1] for p in pairs)
         tol = max(abs_tol, rel_tol * abs(mr))
+        if metric.startswith("CpuClock"):
+            # One read can swing between the minimum and turbo (800-4000 MHz on CI's Xeons),
+            # so two means of a few reads differ by chance: allow three standard errors of
+            # that difference. A steady clock keeps the tolerance above.
+            spread = statistics.pstdev(p[0] for p in pairs) ** 2 + statistics.pstdev(p[1] for p in pairs) ** 2
+            tol = max(tol, 3 * math.sqrt(spread / len(pairs)))
         ok = abs(mf - mr) <= tol
         failed |= not ok
         results.append({"metric": metric, "reference": src, "result": "PASS" if ok else "FAIL", "freehm": mf, "ref": mr, "diff": abs(mf - mr), "tolerance": tol, "n": len(pairs)})
