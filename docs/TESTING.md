@@ -17,8 +17,8 @@ no game, virtual displays). "Local" means the developer PC:
 
 | Crate | Tests | Covers |
 |---|---|---|
-| freehm-core | 88 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, late or out-of-order events, bounded memory), game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
-| freehm | 11 on Windows, 20 on Linux (adds `/proc` probe and permission tests) | overlay placement and the monitor used during exclusive fullscreen, path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
+| freehm-core | 107 | config schema/migration/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, 1% and 0.1% lows, late or out-of-order events, bounded memory), update logic (version order, GitHub's release description, trusted addresses, checksum files), monitor identity, game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering |
+| freehm | 17 on Windows, 25 on Linux (adds `/proc` probe and permission tests) | overlay placement and the monitor used during exclusive fullscreen, downloads against a local server (checksum mismatch, unlisted file, plain HTTP refused), replacing an AppImage, path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
 | freehm-helper | 4 | protocol, embedded PawnIO module hashes, request validation |
 
 The telemetry engine and overlay are also tested through the **mock provider**
@@ -60,6 +60,10 @@ The CI job also builds the Inno Setup installer and checks it:
 1. Installs it silently with the helper.
 2. Checks the installed files and licence texts.
 3. Uninstalls it silently and confirms that the service and files are gone.
+
+Some of GitHub's Windows runners drop a presenter out of exclusive fullscreen within 0.2 s, with
+the same code that keeps it elsewhere. The exclusive fullscreen check is skipped on those, with
+a note in the log.
 
 ### Linux (`tools/ci/linux-overlay-test.sh`): CI, all 17 checks pass
 
@@ -113,6 +117,74 @@ delivery of those clicks was not exercised.
 
 One transient rendering glitch (a green block in one screenshot) was seen once and could
 not be reproduced in the next 12 frames. Its cause is unknown.
+
+## Updates
+
+### End to end, in CI
+
+`tools/ci/windows-update-test.ps1` and `tools/ci/linux-update-test.sh` run the real installer
+and the real AppImage, with a release served from the CI machine in GitHub's place. All checks
+pass in run 42332279544.
+
+| Check | Windows installer, all users | AppImage |
+|---|---|---|
+| The check at start finds the release | yes, and it waits to be asked | yes, and it goes ahead |
+| A file that does not match its checksum is deleted and nothing changes | yes | yes |
+| A failed installer is reported and can be retried | yes, with `where.exe` (exit code 2) as the "installer" | not applicable |
+| Nothing is installed while a game runs | yes: downloaded, verified and held for as long as the test game ran | not tested |
+| Install, then restart | 0.1.0 → 9.9.9 in the registry, FreeHM restarted with its settings | file replaced, executable, restarted by itself |
+
+Also on Linux: a plain binary only points to the release (`--install-update` refuses), and a real
+request to GitHub completes over TLS with the system's certificates.
+
+### On the developer PC, with Microsoft Defender on
+
+The real updater, downloading from GitHub, with real-time protection and behaviour monitoring
+on (signatures 1.463.165.0). A temporary pre-release held the CI installer, and the test used a
+copy installed for one user, so no administrator prompt was involved. The copy was then removed
+by hand, because the per-user uninstaller would ask for rights to remove the helper service.
+
+| Step | Result |
+|---|---|
+| Found by the check at start | after 15 s, method `Installer` |
+| Download and checksum | 1 s for 4.8 MB |
+| Installer run with a settings window open | settings window closed, old process gone |
+| New version started | 4 s after the download |
+| Defender | no new detection in `Get-MpThreatDetection` or `Get-MpThreat`, and nothing in its event log |
+
+This is one PC. Defender's verdict can differ elsewhere, and FreeMic, a different unsigned
+program, was flagged on this same PC when it saved a downloaded file.
+
+## Frame rate lows
+
+The test presenter stalls for 40 ms every 50 frames and measures its own lows with its own code
+at `Present_Start`, the point FreeHM uses. After both had 60 s of frames, in CI:
+
+| Run | Frames | 1% low, FreeHM vs presenter | 0.1% low, FreeHM vs presenter | Average |
+|---|---|---|---|---|
+| 42311284335 | 2704 | 13.4 vs 12.99 | 9.9 vs 9.93 | 31 FPS |
+| 42332279544 | 2945 | 14.1 vs 14.30 | 12.0 vs 11.96 | 51.3 FPS |
+
+The first attempt at this comparison disagreed by 32%, because the presenter timed its frames
+after `Present` returned. Lows depend on that choice, so they need not match a tool that times
+frames differently.
+
+## Overlay position and monitor names (Windows, on screen)
+
+Run on the developer PC against a clean configuration, on the General page, which is where the
+person who reported the bug was:
+
+* Dragging the green box on the General page's map moved the real overlay window to 1106,579,
+  set the position to Custom and saved it. The overlay showed during the move and hid again
+  after about 4 s.
+* The Monitor list showed `PG27QRT1B — 2560×1440 (Primary)` and `E2411K — 1920×1080`. Choosing
+  E2411K moved the overlay to it, and the choice survived a restart.
+* Windows renumbered the same two monitors from `DISPLAY1`/`DISPLAY2` to `DISPLAY7`/`DISPLAY8`
+  during that day, which is why the choice stores the monitor's device path. Finding a monitor
+  after renumbering is covered by unit tests; it was not done on screen.
+
+The original report had a simpler cause: the only published release, v0.1.0-rc3, predated the
+drag feature.
 
 ## FPS and frame time (Windows)
 
@@ -321,6 +393,11 @@ been measured over a real game.
 These have **not** been verified. Treat them as unknown:
 
 * **More real games**: only one DXGI game (Geometry Dash) has been compared with PresentMon; D3D9, OpenGL and Vulkan games are untested.
+* **Lows against PresentMon or in a real game**: lows have only been compared with the test presenter's own measurement.
+* **The administrator prompt during an update**: CI machines show none, and the test on the developer PC used an install for one user. Saying No to the prompt was simulated with an installer that fails.
+* **Update notifications on screen**: clicking the Windows notification, the tray menu's update item, and Linux notifications on a real desktop.
+* **AppImage over FUSE**: CI runs AppImages in extract-and-run mode, and a game during an AppImage update was not tested.
+* **Monitor names on Linux**: read from EDID (X11) and make/model (Wayland), but CI's virtual outputs have none, so they have not been seen working.
 * **Exclusive fullscreen in a real game**: measured with the Direct3D 11 test presenter only (see "Exclusive fullscreen"). StellarDrive (Unity 6, D3D11) failed to enter exclusive mode at its start and fell back to borderless, where the overlay was visible.
 * **Exclusive fullscreen with one monitor**: the notification balloon was not seen on screen (the test PC has two monitors; CI checks the warning text).
 * **AMD and Intel GPUs**: the Windows WDDM path and the Linux amdgpu, i915 and xe paths have only run where there is no such GPU. AMD CPUs (PawnIO SMN module, `k10temp`) are untested too.

@@ -1178,7 +1178,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "freehm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "fontdb",
@@ -1202,7 +1202,7 @@ dependencies = [
 
 [[package]]
 name = "freehm-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fontdue",
  "log",
@@ -1212,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "freehm-helper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "freehm-core",
  "log",

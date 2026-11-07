@@ -1,5 +1,5 @@
 ﻿; FreeHM Windows installer (Inno Setup 6).
-; Build:  ISCC.exe /DAppVersion=0.1.0 /DBinDir=..\..\target\release installer\windows\freehm.iss
+; Build:  ISCC.exe /DAppVersion=0.2.0 /DBinDir=..\..\target\release installer\windows\freehm.iss
 ;
 ; One elevation, at install time. The installer asks for administrator rights only to
 ; install into Program Files and (optionally) register the hardware helper service; the
@@ -7,7 +7,7 @@
 ; elevation and skips the helper (it can be added later from Settings).
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.2.0"
 #endif
 #ifndef BinDir
   #define BinDir "..\..\target\release"

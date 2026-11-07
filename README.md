@@ -232,7 +232,7 @@ cargo test --workspace
 cargo build --release --workspace     # target/release/freehm(.exe), freehm-helper.exe
 ```
 
-* Windows installer: Inno Setup 6, `ISCC /DAppVersion=0.1.0 installer\windows\freehm.iss`
+* Windows installer: Inno Setup 6, `ISCC /DAppVersion=0.2.0 installer\windows\freehm.iss`
 * Linux: `cargo deb -p freehm`; AppImage steps are in `.github/workflows/ci.yml`
 * Licence list: `cargo about generate about.hbs -o dist/THIRD_PARTY_LICENSES.html`
 
