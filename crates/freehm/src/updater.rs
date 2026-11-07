@@ -170,21 +170,26 @@ fn detect_method() -> UpdateMethod {
     }
 }
 
-/// Was FreeHM installed for all users (the installer's registry entry says so)?
+/// Is this copy the one installed for all users? The installer's registry entry says where
+/// that one is; an install for one user can exist beside it.
 #[cfg(windows)]
 fn installed_for_all_users() -> bool {
-    use crate::platform::windows::util::wide;
-    use windows::Win32::System::Registry::{HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_OPEN_CREATE_OPTIONS, RegCloseKey, RegOpenKeyExW};
+    use crate::platform::windows::util::{from_wide, wide};
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
     use windows::core::PCWSTR;
     let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{F0309FCD-477A-4D75-A8ED-61F6BFC20E4C}_is1");
-    let mut h = HKEY::default();
-    unsafe {
-        let found = RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(key.as_ptr()), Some(REG_OPEN_CREATE_OPTIONS(0).0), KEY_READ, &mut h).is_ok();
-        if found {
-            let _ = RegCloseKey(h);
-        }
-        found
-    }
+    let value = wide("InstallLocation");
+    let mut buf = [0u16; 1024];
+    let mut size = std::mem::size_of_val(&buf) as u32;
+    let found =
+        unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, PCWSTR(key.as_ptr()), PCWSTR(value.as_ptr()), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut size)) };
+    let Ok(exe) = std::env::current_exe() else { return false };
+    found.is_ok() && exe.parent().is_some_and(|dir| same_folder(&from_wide(&buf), &dir.to_string_lossy()))
+}
+
+#[cfg(windows)]
+fn same_folder(a: &str, b: &str) -> bool {
+    a.trim_end_matches('\').eq_ignore_ascii_case(b.trim_end_matches('\'))
 }
 
 #[cfg(not(windows))]
@@ -631,6 +636,14 @@ mod tests {
         assert!(e.contains(CHECKSUMS_FILE), "{e}");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn folders_compare_as_windows_does() {
+        assert!(same_folder(r"C:\Program Files\FreeHM\", r"C:\Program Files\FreeHM"));
+        assert!(same_folder(r"c:\program files\freehm", r"C:\Program Files\FreeHM\"));
+        assert!(!same_folder(r"C:\Program Files\FreeHM\", r"C:\Users\A\AppData\Local\Programs\FreeHM"));
     }
 
     #[test]

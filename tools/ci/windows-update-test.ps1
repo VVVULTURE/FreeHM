@@ -5,11 +5,11 @@
 #   refused; an installer that fails is reported; nothing is installed while a game runs; then
 #   the silent install replaces the running app (and an open settings window) and restarts it.
 # Needs an elevated shell. Usage:
-#   tools\ci\windows-update-test.ps1 -Setup <setup> -NewSetup <setup of 9.9.9> -Presenter <present_loop.exe> [-Out ci-out]
-param([string]$Setup, [string]$NewSetup, [string]$Presenter, [string]$Out = "ci-out")
+#   tools\ci\windows-update-test.ps1 -Setup <setup> -NewSetup <setup of 9.9.9> -PresentLoop <present_loop.exe> [-Out ci-out]
+param([string]$Setup, [string]$NewSetup, [string]$PresentLoop, [string]$Out = "ci-out")
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force $Out | Out-Null
-$Setup = (Resolve-Path $Setup).Path; $NewSetup = (Resolve-Path $NewSetup).Path; $Presenter = (Resolve-Path $Presenter).Path
+$Setup = (Resolve-Path $Setup).Path; $NewSetup = (Resolve-Path $NewSetup).Path; $PresentLoop = (Resolve-Path $PresentLoop).Path
 
 function Fail($m) { Write-Host "FAIL: $m"; Copy-Item "$cfg\logs\*.log" $Out -ErrorAction SilentlyContinue; Cleanup; exit 1 }
 function Pass($m) { Write-Host "PASS: $m" }
@@ -102,7 +102,7 @@ Pass "an installer that fails is reported and can be retried: $((Status).update.
 # Nothing is installed during a game.
 Copy-Item $NewSetup "$web\$name" -Force
 Sums (Get-FileHash "$web\$name" -Algorithm SHA256).Hash.ToLower()
-$presenter = Start-Process $Presenter -ArgumentList "180" -PassThru -RedirectStandardOutput "$Out\update-present-loop.txt"
+$presenter = Start-Process $PresentLoop -ArgumentList "180" -PassThru -RedirectStandardOutput "$Out\update-present-loop.txt"
 Start-Sleep -Seconds 2
 $pw = [W]::FindWindow("FreeHM.PresentLoop", "FreeHM present loop")
 [W]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [W]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero); [void][W]::SetForegroundWindow($pw)
