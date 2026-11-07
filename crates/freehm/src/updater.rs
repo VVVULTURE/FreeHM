@@ -174,22 +174,17 @@ fn detect_method() -> UpdateMethod {
 /// that one is; an install for one user can exist beside it.
 #[cfg(windows)]
 fn installed_for_all_users() -> bool {
-    use crate::platform::windows::util::{from_wide, wide};
-    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
-    use windows::core::PCWSTR;
-    let key = wide(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{F0309FCD-477A-4D75-A8ED-61F6BFC20E4C}_is1");
-    let value = wide("InstallLocation");
-    let mut buf = [0u16; 1024];
-    let mut size = std::mem::size_of_val(&buf) as u32;
-    let found =
-        unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, PCWSTR(key.as_ptr()), PCWSTR(value.as_ptr()), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut size)) };
-    let Ok(exe) = std::env::current_exe() else { return false };
-    found.is_ok() && exe.parent().is_some_and(|dir| same_folder(&from_wide(&buf), &dir.to_string_lossy()))
+    use windows::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+    const ENTRY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{F0309FCD-477A-4D75-A8ED-61F6BFC20E4C}_is1";
+    let location = crate::platform::windows::util::reg_string(HKEY_LOCAL_MACHINE, ENTRY, "InstallLocation");
+    let exe = std::env::current_exe().ok();
+    let dir = exe.as_deref().and_then(Path::parent);
+    location.zip(dir).is_some_and(|(l, d)| same_folder(&l, &d.to_string_lossy()))
 }
 
 #[cfg(windows)]
 fn same_folder(a: &str, b: &str) -> bool {
-    a.trim_end_matches('\').eq_ignore_ascii_case(b.trim_end_matches('\'))
+    a.trim_end_matches('\\').eq_ignore_ascii_case(b.trim_end_matches('\\'))
 }
 
 #[cfg(not(windows))]

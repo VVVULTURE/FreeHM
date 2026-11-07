@@ -91,7 +91,7 @@ jobs:
           & $iscc "/DAppVersion=9.9.9" "/DBinDir=..\..\target\release" "/O$PWD\ci-update" installer\windows\freehm.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $setup = (Get-ChildItem dist\FreeHM-*-setup.exe).FullName
-          ./tools/ci/windows-update-test.ps1 -Setup $setup -NewSetup ci-update\FreeHM-9.9.9-windows-x64-setup.exe -Presenter target\release\examples\present_loop.exe -Out ci-out
+          ./tools/ci/windows-update-test.ps1 -Setup $setup -NewSetup ci-update\FreeHM-9.9.9-windows-x64-setup.exe -PresentLoop target\release\examples\present_loop.exe -Out ci-out
       - uses: actions/upload-artifact@v5
         if: always()
         with:
