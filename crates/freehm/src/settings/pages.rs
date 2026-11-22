@@ -87,6 +87,36 @@ fn switch(ui: &mut egui::Ui, on: &mut bool, name: &str) -> egui::Response {
     response
 }
 
+/// A box to type a whole number into. A number inside `range` applies as it is typed; when
+/// the box loses focus (Enter, Tab or a click elsewhere) a number outside it is clamped, and
+/// anything else goes back to the current value.
+fn number_box(ui: &mut egui::Ui, value: &mut u32, range: std::ops::RangeInclusive<u32>, id_salt: &str) -> egui::Response {
+    let id = ui.make_persistent_id(id_salt);
+    let draft = id.with("draft");
+    let mut text = ui.data_mut(|d| d.get_temp::<String>(draft)).unwrap_or_else(|| value.to_string());
+    let digits = range.end().to_string().len();
+    let r = ui.add(egui::TextEdit::singleline(&mut text).id(id).desired_width(10.0 * digits as f32 + 8.0).char_limit(digits));
+    text.retain(|c| c.is_ascii_digit());
+    let typed = text.parse::<u32>().ok();
+    if r.changed()
+        && let Some(n) = typed
+        && range.contains(&n)
+    {
+        *value = n;
+    }
+    if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(draft, text));
+    } else {
+        if r.lost_focus()
+            && let Some(n) = typed
+        {
+            *value = n.clamp(*range.start(), *range.end());
+        }
+        ui.data_mut(|d| d.remove::<String>(draft));
+    }
+    r
+}
+
 fn slider(ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str) {
     ui.label(label);
     ui.add(egui::Slider::new(v, range).suffix(suffix).max_decimals(1));
@@ -358,13 +388,13 @@ pub fn overlay(app: &mut SettingsApp, ui: &mut egui::Ui) {
         ui.add_enabled_ui(pancake, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Statistics high");
-                ui.add(egui::DragValue::new(&mut o.pancake_rows).range(1..=MAX_PANCAKE_ROWS).speed(0.05));
+                number_box(ui, &mut o.pancake_rows, 1..=MAX_PANCAKE_ROWS, "pancake-rows");
             });
         });
         hint(
             ui,
             if pancake {
-                "Click the number to type it, 1 to 20. With more rows than statistics, each statistic gets its own row.                  The two box layouts above apply in Box Mode only."
+                "Type a number from 1 to 20. With more rows than statistics, each statistic gets its own row. The two box layouts above apply in Box Mode only."
             } else {
                 "Statistics high is only available in Line / Pancake Mode."
             },
@@ -491,7 +521,7 @@ pub fn metrics(app: &mut SettingsApp, ui: &mut egui::Ui) {
     } else if grouped {
         hint(
             ui,
-            "In Grouped by device, each line shows its device name instead of a label per statistic, so the Label boxes do not apply.              Overlay ▸ Layout ▸ Show labels turns the device names on and off.",
+            "In Grouped by device, each line shows its device name instead of a label per statistic, so the Label boxes do not apply. Overlay ▸ Layout ▸ Show labels turns the device names on and off.",
         );
     }
     let n = app.draft.metrics.len();
