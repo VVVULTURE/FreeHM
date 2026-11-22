@@ -66,6 +66,27 @@ fn color_row(ui: &mut egui::Ui, label: &str, c: &mut Rgba) {
     ui.end_row();
 }
 
+/// An on/off switch; `on` is the right-hand side.
+fn switch(ui: &mut egui::Ui, on: &mut bool, name: &str) -> egui::Response {
+    let size = ui.spacing().interact_size.y * egui::vec2(2.0, 1.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Switch, ui.is_enabled(), *on, name));
+    if ui.is_rect_visible(rect) {
+        let t = ui.ctx().animate_bool_responsive(response.id, *on);
+        let visuals = ui.style().interact_selectable(&response, *on);
+        let rect = rect.expand(visuals.expansion);
+        let radius = 0.5 * rect.height();
+        ui.painter().rect(rect, radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
+        let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
+        ui.painter().circle(egui::pos2(x, rect.center().y), 0.75 * radius, visuals.bg_fill, visuals.fg_stroke);
+    }
+    response
+}
+
 fn slider(ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str) {
     ui.label(label);
     ui.add(egui::Slider::new(v, range).suffix(suffix).max_decimals(1));
@@ -317,10 +338,39 @@ pub fn overlay(app: &mut SettingsApp, ui: &mut egui::Ui) {
 
     section(ui, "Layout", |ui| {
         ui.horizontal(|ui| {
-            ui.radio_value(&mut o.layout, LayoutMode::Stacked, "One metric per line");
-            ui.radio_value(&mut o.layout, LayoutMode::Grouped, "Grouped by device");
-            ui.radio_value(&mut o.layout, LayoutMode::SingleLine, "Single line");
+            let mut pancake = o.display_mode == DisplayMode::Pancake;
+            if ui.selectable_label(!pancake, "Box Mode").clicked() {
+                pancake = false;
+            }
+            switch(ui, &mut pancake, "Line / Pancake Mode");
+            if ui.selectable_label(pancake, "Line / Pancake Mode").clicked() {
+                pancake = true;
+            }
+            o.display_mode = if pancake { DisplayMode::Pancake } else { DisplayMode::Box };
         });
+        let pancake = o.display_mode == DisplayMode::Pancake;
+        ui.add_enabled_ui(!pancake, |ui| {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut o.layout, LayoutMode::Stacked, "One metric per line");
+                ui.radio_value(&mut o.layout, LayoutMode::Grouped, "Grouped by device");
+            });
+        });
+        ui.add_enabled_ui(pancake, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Statistics high");
+                ui.add(egui::DragValue::new(&mut o.pancake_rows).range(1..=MAX_PANCAKE_ROWS).speed(0.05));
+            });
+        });
+        hint(
+            ui,
+            if pancake {
+                "Click the number to type it, 1 to 20. With more rows than statistics, each statistic gets its own row.                  The two box layouts above apply in Box Mode only."
+            } else {
+                "Statistics high is only available in Line / Pancake Mode."
+            },
+        );
+        ui.checkbox(&mut o.show_labels, "Show labels");
+        hint(ui, "Choose which statistics have a label with the Label boxes on the Metrics page.");
         ui.checkbox(&mut o.compact_labels, "Compact labels (CPU, GPU, FT …)");
         ui.checkbox(&mut o.show_units, "Show units");
         ui.collapsing("Spacing", |ui| {
@@ -434,7 +484,16 @@ pub fn metrics(app: &mut SettingsApp, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     let snap = app.status.as_ref().map(|s| s.snapshot.clone());
     let cfg_view = app.draft.clone();
-    let grouped = app.draft.overlay.layout == LayoutMode::Grouped;
+    let grouped = app.draft.overlay.display_mode == DisplayMode::Box && app.draft.overlay.layout == LayoutMode::Grouped;
+    let labels_apply = app.draft.overlay.show_labels && !grouped;
+    if !app.draft.overlay.show_labels {
+        hint(ui, "Labels are off (Overlay ▸ Layout ▸ Show labels), so the Label boxes have no effect until it is on.");
+    } else if grouped {
+        hint(
+            ui,
+            "In Grouped by device, each line shows its device name instead of a label per statistic, so the Label boxes do not apply.              Overlay ▸ Layout ▸ Show labels turns the device names on and off.",
+        );
+    }
     let n = app.draft.metrics.len();
     let mut swap: Option<(usize, usize)> = None;
     egui::Grid::new("metrics").num_columns(7).striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
@@ -451,10 +510,13 @@ pub fn metrics(app: &mut SettingsApp, ui: &mut egui::Ui) {
             ui.label(e.id.display_name());
             let mut label = e.label.clone().unwrap_or_default();
             let def = if cfg_view.overlay.compact_labels { e.id.compact_label() } else { e.id.default_label() };
-            // add_sized: inside a Grid, desired_width alone collapses to the previous frame's column width.
-            if ui.add_sized([100.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut label).hint_text(def)).changed() {
-                e.label = if label.is_empty() { None } else { Some(label) };
-            }
+            ui.horizontal(|ui| {
+                ui.add_enabled(labels_apply, egui::Checkbox::without_text(&mut e.show_label)).on_hover_text("Show this statistic's label");
+                // add_sized: inside a Grid, desired_width alone collapses to the previous frame's column width.
+                if ui.add_sized([100.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut label).hint_text(def)).changed() {
+                    e.label = if label.is_empty() { None } else { Some(label) };
+                }
+            });
             if grouped {
                 let mut g = e.group.clone().unwrap_or_default();
                 if ui.add_sized([70.0, ui.spacing().interact_size.y], egui::TextEdit::singleline(&mut g).hint_text(e.id.default_group())).changed() {

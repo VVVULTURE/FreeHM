@@ -6,7 +6,7 @@
 //! the native format of Windows layered windows (`UpdateLayeredWindow`), X11 ARGB32
 //! visuals and Wayland `ARGB8888` shm buffers on little-endian machines.
 
-use crate::config::{Config, FontChoice, FontWeight, LayoutMode, Rgba};
+use crate::config::{Config, DisplayMode, FontChoice, FontWeight, LayoutMode, Rgba};
 use crate::format::{Formatted, format_reading};
 use crate::metrics::{DEVICE_GAME, DEVICE_MEMORY, DeviceKind, MetricId, Snapshot};
 use std::collections::HashMap;
@@ -64,14 +64,14 @@ impl Pixmap {
 /// One overlay line, already formatted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
-    /// Leading label column (Stacked / Grouped).
+    /// Leading label column (Box Mode); `None` when the label is hidden or in Pancake Mode.
     pub label: Option<String>,
     pub items: Vec<Item>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
-    /// Inline label drawn before the value (single-line layout).
+    /// Label drawn just before the value (Line / Pancake Mode).
     pub prefix: Option<String>,
     pub value: String,
     pub unit: String,
@@ -90,11 +90,14 @@ pub fn build_rows(snap: &Snapshot, cfg: &Config) -> Vec<Row> {
             DeviceKind::Game => Some(DEVICE_GAME.to_string()),
         }
     };
-    let compact = cfg.overlay.compact_labels;
+    let o = &cfg.overlay;
+    let compact = o.compact_labels;
 
-    let mut entries: Vec<(String, String, Formatted)> = Vec::new(); // (label, group, value)
+    // (label, group, value); the label is `None` when it is switched off.
+    let mut entries: Vec<(Option<String>, String, Formatted)> = Vec::new();
     for e in cfg.enabled_metrics() {
-        let label = e.label.clone().unwrap_or_else(|| if compact { e.id.compact_label() } else { e.id.default_label() }.to_string());
+        let label = (o.show_labels && e.show_label)
+            .then(|| e.label.clone().unwrap_or_else(|| if compact { e.id.compact_label() } else { e.id.default_label() }.to_string()));
         let group = e.group.clone().unwrap_or_else(|| e.id.default_group().to_string());
         let f = match device_of(e.id).and_then(|d| snap.get(&d, e.id).cloned().map(|r| (d, r))) {
             Some((dev, r)) => {
@@ -108,29 +111,35 @@ pub fn build_rows(snap: &Snapshot, cfg: &Config) -> Vec<Row> {
             }
             None => Formatted { value: crate::format::UNAVAILABLE.into(), unit: String::new(), dim: true, available: false },
         };
-        let f = if cfg.overlay.show_units { f } else { Formatted { unit: String::new(), ..f } };
+        let f = if o.show_units { f } else { Formatted { unit: String::new(), ..f } };
         entries.push((label, group, f));
     }
 
     let item = |prefix: Option<String>, f: Formatted| Item { prefix, value: f.value, unit: f.unit, dim: f.dim };
-    match cfg.overlay.layout {
-        LayoutMode::Stacked => entries.into_iter().map(|(label, _, f)| Row { label: Some(label), items: vec![item(None, f)] }).collect(),
-        LayoutMode::Grouped => {
+    match (o.display_mode, o.layout) {
+        (DisplayMode::Pancake, _) => {
+            let n = entries.len();
+            if n == 0 {
+                return Vec::new();
+            }
+            // More rows than statistics leaves one statistic per row.
+            let rows = (o.pancake_rows.max(1) as usize).min(n);
+            // As even as possible, the top rows taking the extra ones: 7 in 2 rows is 4 + 3.
+            let (base, extra) = (n / rows, n % rows);
+            let mut left = entries.into_iter();
+            (0..rows).map(|r| Row { label: None, items: left.by_ref().take(base + usize::from(r < extra)).map(|(l, _, f)| item(l, f)).collect() }).collect()
+        }
+        (DisplayMode::Box, LayoutMode::Stacked) => entries.into_iter().map(|(label, _, f)| Row { label, items: vec![item(None, f)] }).collect(),
+        (DisplayMode::Box, LayoutMode::Grouped) => {
+            // Each line is labelled by its device, so only the main label switch applies.
             let mut rows: Vec<(String, Row)> = Vec::new();
             for (_, group, f) in entries {
                 match rows.last_mut() {
                     Some((g, row)) if *g == group => row.items.push(item(None, f)),
-                    _ => rows.push((group.clone(), Row { label: Some(group), items: vec![item(None, f)] })),
+                    _ => rows.push((group.clone(), Row { label: o.show_labels.then_some(group), items: vec![item(None, f)] })),
                 }
             }
             rows.into_iter().map(|(_, r)| r).collect()
-        }
-        LayoutMode::SingleLine => {
-            if entries.is_empty() {
-                return Vec::new();
-            }
-            let items = entries.into_iter().map(|(label, _, f)| item(Some(label), f)).collect();
-            vec![Row { label: None, items }]
         }
     }
 }
@@ -149,7 +158,49 @@ pub struct Style {
     pub background: Rgba,
     pub opacity: f32,
     pub shadow: bool,
-    pub stacked_columns: bool,
+    pub columns: Columns,
+}
+
+/// How the items of the rows line up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Columns {
+    /// Box Mode, one per line: labels, then right-aligned numbers, then units.
+    Stacked,
+    /// Box Mode, grouped by device: each line packed on its own after its label.
+    Inline,
+    /// Line / Pancake Mode: columns that line up across the rows; in each one the values
+    /// start right after the column's labels.
+    Grid,
+}
+
+/// What a piece of placed text is, which decides its colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Label,
+    Value,
+    Unit,
+}
+
+/// One piece of text at its place: `x` from the content's left edge, on line `row`.
+#[derive(Debug, Clone, PartialEq)]
+struct Placed {
+    text: String,
+    x: f32,
+    row: usize,
+    part: Part,
+    dim: bool,
+}
+
+impl Placed {
+    fn label(text: &str, x: f32, row: usize) -> Placed {
+        Placed { text: text.to_string(), x, row, part: Part::Label, dim: false }
+    }
+    fn value(it: &Item, x: f32, row: usize) -> Placed {
+        Placed { text: it.value.clone(), x, row, part: Part::Value, dim: it.dim }
+    }
+    fn unit(it: &Item, x: f32, row: usize) -> Placed {
+        Placed { text: it.unit.clone(), x, row, part: Part::Unit, dim: it.dim }
+    }
 }
 
 impl Style {
@@ -168,7 +219,11 @@ impl Style {
             background: o.background,
             opacity: o.opacity,
             shadow: o.text_shadow,
-            stacked_columns: o.layout == LayoutMode::Stacked,
+            columns: match (o.display_mode, o.layout) {
+                (DisplayMode::Pancake, _) => Columns::Grid,
+                (DisplayMode::Box, LayoutMode::Stacked) => Columns::Stacked,
+                (DisplayMode::Box, LayoutMode::Grouped) => Columns::Inline,
+            },
         }
     }
 }
@@ -256,6 +311,113 @@ impl Renderer {
         }
     }
 
+    /// Where each piece of text goes, and the content's width.
+    fn layout(&mut self, rows: &[Row], st: &Style) -> (Vec<Placed>, f32) {
+        let px = st.px;
+        let unit_gap = px * 0.22;
+        let gap = st.column_gap;
+        let mut out = Vec::new();
+        let mut width = 0.0f32;
+        match st.columns {
+            Columns::Stacked => {
+                let label_w = rows.iter().filter_map(|r| r.label.as_deref()).map(|l| self.text_width(l, px)).fold(0.0f32, f32::max);
+                // Only labelled lines share the number column.
+                let (mut value_col, mut unit_col) = (0.0f32, 0.0f32);
+                for it in rows.iter().filter(|r| r.label.is_some()).filter_map(|r| r.items.first()) {
+                    value_col = value_col.max(self.text_width(&it.value, px));
+                    unit_col = unit_col.max(self.unit_width(&it.unit, px, unit_gap));
+                }
+                for (ri, r) in rows.iter().enumerate() {
+                    let Some(it) = r.items.first() else { continue };
+                    match &r.label {
+                        Some(l) => {
+                            out.push(Placed::label(l, 0.0, ri));
+                            let x = label_w + gap;
+                            let vw = self.text_width(&it.value, px);
+                            out.push(Placed::value(it, x + value_col - vw, ri)); // right-aligned so digits line up
+                            if !it.unit.is_empty() {
+                                out.push(Placed::unit(it, x + value_col + self.unit_offset(&it.unit, unit_gap), ri));
+                            }
+                            width = width.max(x + value_col + unit_col);
+                        }
+                        // Without its label, the value starts at the left edge.
+                        None => width = width.max(self.place_item(&mut out, it, 0.0, ri, px, unit_gap)),
+                    }
+                }
+            }
+            Columns::Inline => {
+                let label_w = rows.iter().filter_map(|r| r.label.as_deref()).map(|l| self.text_width(l, px)).fold(0.0f32, f32::max);
+                for (ri, r) in rows.iter().enumerate() {
+                    let mut x = 0.0;
+                    if let Some(l) = &r.label {
+                        out.push(Placed::label(l, 0.0, ri));
+                        x = label_w + gap;
+                    }
+                    for (i, it) in r.items.iter().enumerate() {
+                        if i > 0 {
+                            x += gap;
+                        }
+                        if let Some(p) = &it.prefix {
+                            out.push(Placed::label(p, x, ri));
+                            x += self.text_width(p, px) + unit_gap * 2.0;
+                        }
+                        x = self.place_item(&mut out, it, x, ri, px, unit_gap);
+                    }
+                    width = width.max(x);
+                }
+            }
+            Columns::Grid => {
+                let ncols = rows.iter().map(|r| r.items.len()).max().unwrap_or(0);
+                let mut label_w = vec![0.0f32; ncols];
+                for r in rows {
+                    for (c, it) in r.items.iter().enumerate() {
+                        if let Some(p) = &it.prefix {
+                            label_w[c] = label_w[c].max(self.text_width(p, px));
+                        }
+                    }
+                }
+                let mut col_w = vec![0.0f32; ncols];
+                for r in rows {
+                    for (c, it) in r.items.iter().enumerate() {
+                        let lead = if it.prefix.is_some() { label_w[c] + unit_gap * 2.0 } else { 0.0 };
+                        let w = lead + self.text_width(&it.value, px) + self.unit_width(&it.unit, px, unit_gap);
+                        col_w[c] = col_w[c].max(w);
+                    }
+                }
+                let mut col_x = Vec::with_capacity(ncols);
+                let mut x = 0.0;
+                for w in &col_w {
+                    col_x.push(x);
+                    x += w + gap;
+                }
+                for (ri, r) in rows.iter().enumerate() {
+                    for (c, it) in r.items.iter().enumerate() {
+                        let mut x = col_x[c];
+                        if let Some(p) = &it.prefix {
+                            out.push(Placed::label(p, x, ri));
+                            x += label_w[c] + unit_gap * 2.0;
+                        }
+                        // Without its label, the value starts at the column's left edge.
+                        width = width.max(self.place_item(&mut out, it, x, ri, px, unit_gap));
+                    }
+                }
+            }
+        }
+        (out, width)
+    }
+
+    /// Place a value and its unit from `x`; returns where they end.
+    fn place_item(&mut self, out: &mut Vec<Placed>, it: &Item, x: f32, row: usize, px: f32, unit_gap: f32) -> f32 {
+        out.push(Placed::value(it, x, row));
+        let mut end = x + self.text_width(&it.value, px);
+        if !it.unit.is_empty() {
+            end += self.unit_offset(&it.unit, unit_gap);
+            out.push(Placed::unit(it, end, row));
+            end += self.text_width(&it.unit, px);
+        }
+        end
+    }
+
     /// Lay out and rasterize the rows. Returns an empty 0x0 pixmap when there is nothing to show.
     pub fn render(&mut self, rows: &[Row], st: &Style) -> Pixmap {
         if rows.is_empty() {
@@ -263,81 +425,21 @@ impl Renderer {
         }
         let px = st.px;
         let (ascent, line_h) = self.line_metrics(px);
-        let unit_gap = px * 0.22;
-        let item_gap = st.column_gap;
-
-        // Measure columns.
-        let label_w = rows.iter().filter_map(|r| r.label.as_deref()).map(|l| self.text_width(l, px)).fold(0.0f32, f32::max);
-        let (mut value_col, mut unit_col) = (0.0f32, 0.0f32);
-        if st.stacked_columns {
-            for r in rows {
-                if let Some(it) = r.items.first() {
-                    value_col = value_col.max(self.text_width(&it.value, px));
-                    unit_col = unit_col.max(self.unit_width(&it.unit, px, unit_gap));
-                }
-            }
-        }
-        let mut row_widths = Vec::with_capacity(rows.len());
-        for r in rows {
-            let mut w = if r.label.is_some() { label_w + item_gap } else { 0.0 };
-            if st.stacked_columns {
-                w += value_col + unit_col;
-            } else {
-                for (i, it) in r.items.iter().enumerate() {
-                    if i > 0 {
-                        w += item_gap;
-                    }
-                    if let Some(p) = &it.prefix {
-                        w += self.text_width(p, px) + unit_gap * 2.0;
-                    }
-                    w += self.text_width(&it.value, px) + self.unit_width(&it.unit, px, unit_gap);
-                }
-            }
-            row_widths.push(w);
-        }
-        let content_w = row_widths.iter().cloned().fold(0.0f32, f32::max);
+        let (placed, content_w) = self.layout(rows, st);
         let shadow_pad = if st.shadow { (px / 14.0).ceil().max(1.0) } else { 0.0 };
         let width = (content_w + st.padding * 2.0 + shadow_pad).ceil().max(1.0) as u32;
         let height = (rows.len() as f32 * line_h + (rows.len() as f32 - 1.0) * st.line_spacing + st.padding * 2.0 + shadow_pad).ceil().max(1.0) as u32;
 
         let mut pm = Pixmap::new(width, height);
         fill_rounded_rect(&mut pm, st.background, st.corner_radius);
-
-        for (ri, r) in rows.iter().enumerate() {
-            let baseline = st.padding + ri as f32 * (line_h + st.line_spacing) + ascent;
-            let mut x = st.padding;
-            if let Some(l) = &r.label {
-                self.draw_text(&mut pm, l, x, baseline, px, st.label, st.shadow);
-                x += label_w + item_gap;
-            }
-            if st.stacked_columns {
-                if let Some(it) = r.items.first() {
-                    let vw = self.text_width(&it.value, px);
-                    let vx = x + value_col - vw; // right-align numbers so digits line up
-                    self.draw_text(&mut pm, &it.value, vx, baseline, px, dimmed(st.value, it.dim), st.shadow);
-                    if !it.unit.is_empty() {
-                        let ux = x + value_col + self.unit_offset(&it.unit, unit_gap);
-                        self.draw_text(&mut pm, &it.unit, ux, baseline, px, dimmed(st.unit, it.dim), st.shadow);
-                    }
-                }
-            } else {
-                for (i, it) in r.items.iter().enumerate() {
-                    if i > 0 {
-                        x += item_gap;
-                    }
-                    if let Some(p) = &it.prefix {
-                        self.draw_text(&mut pm, p, x, baseline, px, st.label, st.shadow);
-                        x += self.text_width(p, px) + unit_gap * 2.0;
-                    }
-                    self.draw_text(&mut pm, &it.value, x, baseline, px, dimmed(st.value, it.dim), st.shadow);
-                    x += self.text_width(&it.value, px);
-                    if !it.unit.is_empty() {
-                        x += self.unit_offset(&it.unit, unit_gap);
-                        self.draw_text(&mut pm, &it.unit, x, baseline, px, dimmed(st.unit, it.dim), st.shadow);
-                        x += self.text_width(&it.unit, px);
-                    }
-                }
-            }
+        for p in &placed {
+            let baseline = st.padding + p.row as f32 * (line_h + st.line_spacing) + ascent;
+            let color = match p.part {
+                Part::Label => st.label,
+                Part::Value => dimmed(st.value, p.dim),
+                Part::Unit => dimmed(st.unit, p.dim),
+            };
+            self.draw_text(&mut pm, &p.text, st.padding + p.x, baseline, px, color, st.shadow);
         }
 
         if st.opacity < 1.0 {
@@ -545,13 +647,185 @@ mod tests {
         assert_eq!(build_rows(&snap(), &c).len(), 3);
     }
 
+    fn pancake(ids: &[MetricId], rows: u32) -> Config {
+        let mut c = only(ids);
+        c.overlay.display_mode = DisplayMode::Pancake;
+        c.overlay.pancake_rows = rows;
+        c
+    }
+
+    const EIGHT: [MetricId; 8] = [
+        MetricId::Fps,
+        MetricId::FrameTime,
+        MetricId::GpuUsage,
+        MetricId::GpuTemp,
+        MetricId::VramUsed,
+        MetricId::CpuUsage,
+        MetricId::CpuTemp,
+        MetricId::RamUsed,
+    ];
+
     #[test]
-    fn single_line_layout() {
-        let mut c = only(&[MetricId::Fps, MetricId::GpuUsage]);
-        c.overlay.layout = LayoutMode::SingleLine;
-        let rows = build_rows(&snap(), &c);
+    fn one_row_pancake_is_a_single_line() {
+        let rows = build_rows(&snap(), &pancake(&[MetricId::Fps, MetricId::GpuUsage], 1));
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, None);
         assert_eq!(rows[0].items[0].prefix.as_deref(), Some("FPS"));
+        assert_eq!(rows[0].items[1].prefix.as_deref(), Some("GPU"));
+    }
+
+    #[test]
+    fn pancake_fills_rows_top_first_and_evenly() {
+        let counts = |ids: &[MetricId], n: u32| build_rows(&snap(), &pancake(ids, n)).iter().map(|r| r.items.len()).collect::<Vec<_>>();
+        assert_eq!(counts(&EIGHT, 1), vec![8]);
+        assert_eq!(counts(&EIGHT, 2), vec![4, 4]);
+        assert_eq!(counts(&EIGHT, 3), vec![3, 3, 2]);
+        assert_eq!(counts(&EIGHT[..7], 2), vec![4, 3]);
+        assert_eq!(counts(&EIGHT[..7], 3), vec![3, 2, 2]);
+        // More rows than statistics: one statistic per row.
+        assert_eq!(counts(&EIGHT, 20), vec![1; 8]);
+        assert!(build_rows(&snap(), &pancake(&[], 3)).is_empty());
+        // Row by row, in the configured order.
+        let rows = build_rows(&snap(), &pancake(&EIGHT, 2));
+        let first: Vec<_> = rows[1].items.iter().map(|i| i.prefix.clone().unwrap()).collect();
+        assert_eq!(first, ["VRAM", "CPU", "CPU Temp", "RAM"]);
+    }
+
+    #[test]
+    fn labels_can_be_hidden_one_by_one_or_all_at_once() {
+        let ids = [MetricId::Fps, MetricId::CpuUsage, MetricId::CpuTemp];
+        let mut c = only(&ids);
+        c.metrics[1].show_label = false;
+        let labels = |c: &Config| build_rows(&snap(), c).iter().map(|r| r.label.clone()).collect::<Vec<_>>();
+        assert_eq!(labels(&c), [Some("FPS".to_string()), None, Some("CPU Temp".to_string())]);
+        // The value is still there.
+        assert_eq!(build_rows(&snap(), &c)[1].items[0].value, "12");
+        c.overlay.show_labels = false;
+        assert_eq!(labels(&c), [None, None, None]);
+        // Switching the main switch back on restores each statistic's own choice.
+        c.overlay.show_labels = true;
+        assert_eq!(labels(&c)[1], None);
+
+        let mut p = pancake(&ids, 1);
+        p.metrics[0].show_label = false;
+        let prefixes: Vec<_> = build_rows(&snap(), &p)[0].items.iter().map(|i| i.prefix.clone()).collect();
+        assert_eq!(prefixes, [None, Some("CPU".to_string()), Some("CPU Temp".to_string())]);
+        p.overlay.show_labels = false;
+        assert!(build_rows(&snap(), &p)[0].items.iter().all(|i| i.prefix.is_none()));
+    }
+
+    #[test]
+    fn grouped_layout_follows_only_the_main_label_switch() {
+        let mut c = only(&[MetricId::GpuUsage, MetricId::GpuTemp, MetricId::CpuUsage]);
+        c.overlay.layout = LayoutMode::Grouped;
+        c.metrics[0].show_label = false;
+        c.metrics[1].show_label = false;
+        let rows = build_rows(&snap(), &c);
+        assert_eq!(rows[0].label.as_deref(), Some("GPU"), "per-statistic switches do not apply");
+        c.overlay.show_labels = false;
+        let rows = build_rows(&snap(), &c);
+        assert_eq!(rows.len(), 2, "still grouped");
+        assert!(rows.iter().all(|r| r.label.is_none()));
+    }
+
+    /// Positions are sums of glyph widths, so compare them within a thousandth of a pixel.
+    macro_rules! near {
+        ($a:expr, $b:expr) => {{
+            let (a, b): (f32, f32) = ($a, $b);
+            assert!((a - b).abs() < 1e-3, "{} = {a}, expected {b}", stringify!($a));
+        }};
+    }
+
+    fn at(placed: &[Placed], text: &str, row: usize) -> f32 {
+        placed.iter().find(|p| p.text == text && p.row == row).unwrap_or_else(|| panic!("{text} on row {row}: {placed:?}")).x
+    }
+
+    #[test]
+    fn one_row_pancake_lays_out_like_the_old_single_line() {
+        let c = pancake(&[MetricId::Fps, MetricId::GpuTemp], 1);
+        let st = Style::from_config(&c, 1.0);
+        let (mut r, _) = Renderer::new(&FontChoice::Bundled, FontWeight::SemiBold);
+        let (placed, width) = r.layout(&build_rows(&snap(), &c), &st);
+        // The old single line: label, a gap of two unit gaps, value, unit, column gap, next.
+        let (px, ug) = (st.px, st.px * 0.22);
+        let fps_value = r.text_width("FPS", px) + ug * 2.0;
+        near!(at(&placed, "FPS", 0), 0.0);
+        near!(at(&placed, "144", 0), fps_value);
+        let next = fps_value + r.text_width("144", px) + st.column_gap;
+        near!(at(&placed, "GPU Temp", 0), next);
+        let temp_value = next + r.text_width("GPU Temp", px) + ug * 2.0;
+        near!(at(&placed, "66", 0), temp_value);
+        let unit = placed.iter().find(|p| p.part == Part::Unit).unwrap();
+        near!(unit.x, temp_value + r.text_width("66", px) + ug);
+        near!(width, unit.x + r.text_width(&unit.text, px));
+    }
+
+    #[test]
+    fn pancake_columns_line_up_and_values_follow_their_labels() {
+        // Row 0: FPS, GPU Temp. Row 1: CPU (label off), Frame Time.
+        let mut c = pancake(&[MetricId::Fps, MetricId::GpuTemp, MetricId::CpuUsage, MetricId::FrameTime], 2);
+        c.metrics[2].show_label = false;
+        let st = Style::from_config(&c, 1.0);
+        let (mut r, _) = Renderer::new(&FontChoice::Bundled, FontWeight::SemiBold);
+        let (placed, _) = r.layout(&build_rows(&snap(), &c), &st);
+        let (px, ug) = (st.px, st.px * 0.22);
+        // Column 0: FPS 144 above the unlabelled CPU value, which starts at the column's edge.
+        near!(at(&placed, "FPS", 0), 0.0);
+        near!(at(&placed, "144", 0), r.text_width("FPS", px) + ug * 2.0); // right after the column's label
+        near!(at(&placed, "12", 1), 0.0); // an unlabelled value moves left
+        // Column 1 starts at the same place on both rows, after column 0's widest cell.
+        let col0 = (r.text_width("FPS", px) + ug * 2.0 + r.text_width("144", px)).max(r.text_width("12", px) + ug * 0.3 + r.text_width("%", px));
+        let col1 = col0 + st.column_gap;
+        near!(at(&placed, "GPU Temp", 0), col1);
+        near!(at(&placed, "Frame Time", 1), col1);
+        // Values in column 1 start together, after its widest label, left-aligned.
+        let v1 = col1 + r.text_width("GPU Temp", px).max(r.text_width("Frame Time", px)) + ug * 2.0;
+        near!(at(&placed, "66", 0), v1);
+        near!(at(&placed, "6.9", 1), v1);
+    }
+
+    #[test]
+    fn box_value_without_label_moves_to_the_left_edge() {
+        let mut c = only(&[MetricId::Fps, MetricId::CpuUsage, MetricId::GpuTemp]);
+        c.metrics[1].show_label = false;
+        let st = Style::from_config(&c, 1.0);
+        assert_eq!(st.columns, Columns::Stacked);
+        let (mut r, _) = Renderer::new(&FontChoice::Bundled, FontWeight::SemiBold);
+        let (placed, width) = r.layout(&build_rows(&snap(), &c), &st);
+        let px = st.px;
+        near!(at(&placed, "12", 1), 0.0);
+        // The labelled ones still right-align their numbers in one column.
+        let label_w = r.text_width("FPS", px).max(r.text_width("GPU Temp", px));
+        let num_end = label_w + st.column_gap + r.text_width("144", px).max(r.text_width("66", px));
+        near!(at(&placed, "144", 0) + r.text_width("144", px), num_end);
+        near!(at(&placed, "66", 2) + r.text_width("66", px), num_end);
+        // All labels off: every value at the left edge, and the box narrows.
+        c.overlay.show_labels = false;
+        let (placed, narrow) = r.layout(&build_rows(&snap(), &c), &st);
+        assert!(placed.iter().filter(|p| p.part == Part::Value).all(|p| p.x == 0.0));
+        assert!(placed.iter().all(|p| p.part != Part::Label));
+        assert!(narrow < width);
+    }
+
+    #[test]
+    fn style_follows_the_switch() {
+        let mut c = only(&[MetricId::Fps]);
+        assert_eq!(Style::from_config(&c, 1.0).columns, Columns::Stacked);
+        c.overlay.layout = LayoutMode::Grouped;
+        assert_eq!(Style::from_config(&c, 1.0).columns, Columns::Inline);
+        c.overlay.display_mode = DisplayMode::Pancake;
+        assert_eq!(Style::from_config(&c, 1.0).columns, Columns::Grid, "Box Mode's layout does not apply");
+    }
+
+    #[test]
+    fn pancake_renders_wider_than_tall() {
+        let (mut r, _) = Renderer::new(&FontChoice::Bundled, FontWeight::SemiBold);
+        let render = |r: &mut Renderer, c: &Config| r.render(&build_rows(&snap(), c), &Style::from_config(c, 1.0));
+        let boxed = render(&mut r, &only(&EIGHT));
+        let one = render(&mut r, &pancake(&EIGHT, 1));
+        let two = render(&mut r, &pancake(&EIGHT, 2));
+        assert!(one.width > boxed.width && one.height < boxed.height, "box {boxed:?}, pancake {one:?}");
+        assert!(two.height > one.height && two.width < one.width, "1 row {one:?}, 2 rows {two:?}");
     }
 
     #[test]

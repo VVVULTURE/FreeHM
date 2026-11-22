@@ -85,14 +85,25 @@ pub enum FontChoice {
     File { path: String },
 }
 
+/// The switch between the box and the pancake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DisplayMode {
+    /// Box Mode: the statistics one under another, arranged by `layout`.
+    Box,
+    /// Line / Pancake Mode: the statistics side by side, `pancake_rows` statistics high.
+    Pancake,
+}
+
+/// The most rows Line / Pancake Mode accepts.
+pub const MAX_PANCAKE_ROWS: u32 = 20;
+
+/// How Box Mode arranges the statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LayoutMode {
     /// One metric per line: label column + right-aligned value column.
     Stacked,
     /// One line per group ("GPU  45 %  62 °C  1950 MHz").
     Grouped,
-    /// Everything on a single horizontal line.
-    SingleLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,7 +144,13 @@ pub struct OverlayConfig {
     pub column_gap: f32,
     pub corner_radius: f32,
     pub text_shadow: bool,
+    pub display_mode: DisplayMode,
+    /// Box Mode only.
     pub layout: LayoutMode,
+    /// Line / Pancake Mode only: how many statistics high, 1 to `MAX_PANCAKE_ROWS`.
+    pub pancake_rows: u32,
+    /// Main switch for labels; each metric's `show_label` applies while this is on.
+    pub show_labels: bool,
     pub compact_labels: bool,
     pub show_units: bool,
     /// Extra scale on top of the monitor's DPI scale, 0.5–3.0.
@@ -172,7 +189,10 @@ impl Default for OverlayConfig {
             column_gap: 14.0,
             corner_radius: 4.0,
             text_shadow: true,
+            display_mode: DisplayMode::Box,
             layout: LayoutMode::Stacked,
+            pancake_rows: 1,
+            show_labels: true,
             compact_labels: false,
             show_units: true,
             scale: 1.0,
@@ -197,6 +217,10 @@ pub struct MetricEntry {
     /// Custom label; `None` uses the default (or compact) label.
     #[serde(default)]
     pub label: Option<String>,
+    /// Whether the label is drawn (while the overlay's `show_labels` is on). Not used by the
+    /// grouped layout, whose lines are labelled by device.
+    #[serde(default = "default_true")]
+    pub show_label: bool,
     /// Custom group for the grouped layout; `None` uses the metric's default group.
     #[serde(default)]
     pub group: Option<String>,
@@ -208,8 +232,12 @@ pub struct MetricEntry {
 impl MetricEntry {
     pub fn new(id: MetricId, enabled: bool) -> Self {
         let show_total = matches!(id, MetricId::RamUsed | MetricId::VramUsed);
-        MetricEntry { id, enabled, label: None, group: None, show_total }
+        MetricEntry { id, enabled, label: None, show_label: true, group: None, show_total }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn default_metrics() -> Vec<MetricEntry> {
@@ -379,6 +407,11 @@ impl Config {
         clampf("margin y", &mut o.margin_y, 0.0, 4000.0, d.margin_y);
         clampf("offset x", &mut o.offset_x, -16000.0, 16000.0, d.offset_x);
         clampf("offset y", &mut o.offset_y, -16000.0, 16000.0, d.offset_y);
+        if !(1..=MAX_PANCAKE_ROWS).contains(&o.pancake_rows) {
+            let c = o.pancake_rows.clamp(1, MAX_PANCAKE_ROWS);
+            notes.push(format!("pancake rows {} out of range, clamped to {c}", o.pancake_rows));
+            o.pancake_rows = c;
+        }
 
         // Metrics: drop duplicates and unknowns (serde already rejected unknown ids), then
         // append any metric missing from the list (e.g. added in a newer version) disabled.
@@ -540,6 +573,15 @@ fn migrate(v: &mut serde_json::Value) -> Result<Vec<String>, String> {
     } else if ver > SCHEMA_VERSION {
         notes.push(format!("configuration was written by a newer FreeHM (schema {ver}); unknown settings are ignored"));
     }
+    // 0.3.0: the single-line layout became Line / Pancake Mode, 1 statistic high.
+    if let Some(o) = obj.get_mut("overlay").and_then(|o| o.as_object_mut())
+        && o.get("layout").and_then(|l| l.as_str()) == Some("SingleLine")
+    {
+        o.insert("layout".into(), "Stacked".into());
+        o.insert("display_mode".into(), "Pancake".into());
+        o.insert("pancake_rows".into(), 1.into());
+        notes.push("the single-line layout is now Line / Pancake Mode, 1 statistic high".into());
+    }
     obj.insert("schema_version".into(), SCHEMA_VERSION.into());
     Ok(notes)
 }
@@ -618,6 +660,51 @@ mod tests {
         assert_eq!(c.schema_version, SCHEMA_VERSION);
         assert_eq!(c.general.refresh_interval_ms, 1000);
         assert!(notes.iter().any(|n| n.contains("migrated")));
+    }
+
+    #[test]
+    fn single_line_becomes_a_one_row_pancake() {
+        let json = r#"{"schema_version":1,"overlay":{"layout":"SingleLine","compact_labels":true},
+            "metrics":[{"id":"Fps","enabled":true,"label":"Frames"}]}"#;
+        let (c, notes) = Config::from_json(json).unwrap();
+        assert_eq!(c.overlay.display_mode, DisplayMode::Pancake);
+        assert_eq!(c.overlay.pancake_rows, 1);
+        assert_eq!(c.overlay.layout, LayoutMode::Stacked);
+        assert!(c.overlay.compact_labels, "other settings are kept");
+        assert!(notes.iter().any(|n| n.contains("Pancake")));
+        // Files from before labels could be hidden keep every label.
+        assert!(c.overlay.show_labels);
+        assert!(c.metrics.iter().all(|m| m.show_label));
+        assert_eq!(c.metrics[0].label.as_deref(), Some("Frames"));
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn new_settings_default_to_the_box_with_labels() {
+        let c = Config::default();
+        assert_eq!(c.overlay.display_mode, DisplayMode::Box);
+        assert_eq!(c.overlay.pancake_rows, 1);
+        assert!(c.overlay.show_labels);
+        assert!(c.metrics.iter().all(|m| m.show_label));
+        // A file without the new fields reads the same way.
+        let (old, _) = Config::from_json(r#"{"schema_version":1,"overlay":{"layout":"Grouped"}}"#).unwrap();
+        assert_eq!(old.overlay.display_mode, DisplayMode::Box);
+        assert_eq!(old.overlay.layout, LayoutMode::Grouped);
+    }
+
+    #[test]
+    fn pancake_rows_are_kept_between_1_and_20() {
+        for (given, kept) in [(0, 1), (1, 1), (7, 7), (20, 20), (21, 20), (500, 20)] {
+            let mut c = Config::default();
+            c.overlay.pancake_rows = given;
+            let notes = c.sanitize();
+            assert_eq!(c.overlay.pancake_rows, kept);
+            assert_eq!(notes.is_empty(), given == kept, "{given}: {notes:?}");
+            assert!(c.validate().is_ok(), "sanitized config is valid");
+        }
+        let mut c = Config::default();
+        c.overlay.pancake_rows = 0;
+        assert!(c.validate().is_err(), "the settings window may not send 0 rows");
     }
 
     #[test]

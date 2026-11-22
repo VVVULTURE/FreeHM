@@ -103,13 +103,15 @@ All changes apply immediately, with a live preview, and never need administrator
 * **General**: show/hide now, update interval (default **200 ms**, 50–5000 ms), units
   (°C/°F, MHz/GHz), restore defaults.
 * **Overlay**: font (bundled Exo 2, any installed font, or a font file), size, weight,
-  colours, background and overall opacity, padding/spacing, stacked, grouped or single-line layout,
-  compact labels, scale, monitor (listed by name, and remembered as that monitor even if
+  colours, background and overall opacity, padding/spacing, a switch between **Box Mode**
+  (one metric per line, or grouped by device) and **Line / Pancake Mode** (the metrics side by
+  side, 1 to 20 metrics high, in columns that line up), labels on or off, compact labels, scale, monitor (listed by name, and remembered as that monitor even if
   Windows renumbers its displays), corner presets or custom position, edge margins, and
   "hide from screen capture" (Windows). Drag the overlay on the position map to move it;
   it snaps to the corners and edges. While this page is open the real overlay is shown, so
   every change can be seen where it happens; changes are saved immediately.
-* **Metrics**: enable, reorder, rename and group each metric individually; optional
+* **Metrics**: enable, reorder, rename and group each metric individually, and choose which
+  ones have a label; optional
   "used / total". *Frame rate 1% low* and *0.1% low* are off by default: each is the average
   of the slowest 1% or 0.1% of frames in the last 60 seconds, shown as FPS, and `N/A` until
   there are enough frames (100 and 1000).
@@ -232,7 +234,7 @@ cargo test --workspace
 cargo build --release --workspace     # target/release/freehm(.exe), freehm-helper.exe
 ```
 
-* Windows installer: Inno Setup 6, `ISCC /DAppVersion=0.2.0 installer\windows\freehm.iss`
+* Windows installer: Inno Setup 6, `ISCC /DAppVersion=0.3.0 installer\windows\freehm.iss`
 * Linux: `cargo deb -p freehm`; AppImage steps are in `.github/workflows/ci.yml`
 * Licence list: `cargo about generate about.hbs -o dist/THIRD_PARTY_LICENSES.html`
 
