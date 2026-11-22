@@ -1213,3 +1213,122 @@ pub fn about(app: &mut SettingsApp, ui: &mut egui::Ui) {
         });
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::number_box;
+    use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, RawInput};
+
+    struct H {
+        ctx: egui::Context,
+        value: u32,
+        rect: egui::Rect,
+    }
+
+    impl H {
+        fn frame(&mut self, events: Vec<Event>) {
+            let input = RawInput { screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 200.0))), events, ..Default::default() };
+            let mut v = self.value;
+            let mut rect = self.rect;
+            let mut out = self.ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Statistics high");
+                        rect = number_box(ui, &mut v, 1..=20, "pancake-rows").rect;
+                    });
+                    ui.label("elsewhere");
+                });
+            });
+            out.textures_delta.clear();
+            self.value = v;
+            self.rect = rect;
+        }
+        fn idle(&mut self) {
+            for _ in 0..3 {
+                self.frame(vec![]);
+            }
+        }
+        fn click(&mut self, at: Pos2) {
+            self.frame(vec![Event::PointerMoved(at)]);
+            self.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]);
+            self.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }]);
+            self.idle();
+        }
+        fn key(&mut self, key: Key, modifiers: Modifiers) {
+            self.frame(vec![Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]);
+            self.frame(vec![Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers }]);
+        }
+        fn text(&mut self, t: &str) {
+            self.frame(vec![Event::Text(t.into())]);
+            self.idle();
+        }
+        fn focused(&self) -> bool {
+            self.ctx.memory(|m| m.focused().is_some())
+        }
+    }
+
+    #[test]
+    fn number_box_takes_typed_numbers_and_clamps_on_commit() {
+        let mut h = H { ctx: egui::Context::default(), value: 20, rect: egui::Rect::NOTHING };
+        h.idle();
+        let mut ok = true;
+        let mut check = |what: &str, got: u32, want: u32| {
+            let pass = got == want;
+            ok &= pass;
+            println!("{} {what}: {got} (want {want})", if pass { "PASS" } else { "FAIL" });
+        };
+        let select_all = Modifiers::COMMAND;
+        // The sequence asked of the user: select, type, Enter; three times in a row.
+        for (typed, want) in [("3", 3), ("5", 5), ("2", 2)] {
+            let c = h.rect.center();
+            h.click(c);
+            let f = h.focused();
+            h.key(Key::A, select_all);
+            h.text(typed);
+            check(&format!("typed {typed} (focused after click: {f}), value while typing"), h.value, want);
+            h.key(Key::Enter, Modifiers::NONE);
+            h.idle();
+            check(&format!("typed {typed}, after Enter"), h.value, want);
+        }
+        // Out of range, clamped on Enter.
+        for (typed, want) in [("25", 20), ("0", 1)] {
+            let c = h.rect.center();
+            h.click(c);
+            h.key(Key::A, select_all);
+            h.text(typed);
+            h.key(Key::Enter, Modifiers::NONE);
+            h.idle();
+            check(&format!("typed {typed}, after Enter"), h.value, want);
+        }
+        // Not a number: goes back. Then Tab and click elsewhere.
+        let c = h.rect.center();
+        h.click(c);
+        h.key(Key::A, select_all);
+        h.key(Key::Backspace, Modifiers::NONE);
+        h.idle();
+        h.key(Key::Enter, Modifiers::NONE);
+        h.idle();
+        check("emptied, after Enter (kept)", h.value, 1);
+        let c = h.rect.center();
+        h.click(c);
+        h.key(Key::A, select_all);
+        h.text("x");
+        h.key(Key::Enter, Modifiers::NONE);
+        h.idle();
+        check("typed x, after Enter (kept)", h.value, 1);
+        let c = h.rect.center();
+        h.click(c);
+        h.key(Key::A, select_all);
+        h.text("7");
+        h.key(Key::Tab, Modifiers::NONE);
+        h.idle();
+        check("typed 7, after Tab", h.value, 7);
+        let c = h.rect.center();
+        h.click(c);
+        h.key(Key::A, select_all);
+        h.text("9");
+        h.click(egui::pos2(200.0, 150.0));
+        check("typed 9, then clicked elsewhere", h.value, 9);
+        assert!(ok, "see the FAIL lines above");
+    }
+}

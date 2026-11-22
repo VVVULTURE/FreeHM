@@ -18,7 +18,7 @@ no game, virtual displays). "Local" means the developer PC:
 | Crate | Tests | Covers |
 |---|---|---|
 | freehm-core | 118 | config schema/migration (including the old single-line layout becoming a 1-row pancake)/atomic save/recovery from a corrupt file, metric formatting, frame statistics (FPS and frame-time definitions, 1% and 0.1% lows, late or out-of-order events, bounded memory), update logic (version order, GitHub's release description, trusted addresses, checksum files), monitor identity, game detection rules (launchers, manual/excluded/selected lists, priorities), shortcut parsing and conflicts, overlay policy (when to show, fullscreen warnings), the telemetry engine (precedence, freshness, stale/expired values, coverage hints, provider failures), the mock provider, IPC wire format, layout/rendering (Box Mode stacked and grouped, Line / Pancake Mode rows and aligned columns, labels hidden one by one or all at once, positions of every piece of text) |
-| freehm | 17 on Windows, 25 on Linux (adds `/proc` probe and permission tests) | overlay placement and the monitor used during exclusive fullscreen, downloads against a local server (checksum mismatch, unlisted file, plain HTTP refused), replacing an AppImage, path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
+| freehm | 18 on Windows, 26 on Linux (adds `/proc` probe and permission tests) | overlay placement and the monitor used during exclusive fullscreen, the typed row-count box, downloads against a local server (checksum mismatch, unlisted file, plain HTTP refused), replacing an AppImage, path handling, IPC framing, Linux `/proc` probe and launcher roots, permission-setup argument validation |
 | freehm-helper | 4 | protocol, embedded PawnIO module hashes, request validation |
 
 The telemetry engine and overlay are also tested through the **mock provider**
@@ -194,6 +194,32 @@ person who reported the bug was:
 
 The original report had a simpler cause: the only published release, v0.1.0-rc3, predated the
 drag feature.
+
+## Box Mode, Line / Pancake Mode and labels (Windows, on screen)
+
+The CI installer of 0.3.0, installed for one user with a clean configuration, on the
+developer PC:
+
+* The switch starts on Box Mode with "Statistics high" greyed out. Flipping it moved the real
+  overlay to one line (904 px wide, 36 px high) and greyed out the two box layouts.
+* With 8 statistics, 2 rows gave 4 + 4 with the columns lined up and each value right after its
+  column's labels, on the real overlay and in the preview; 4 rows gave 2 per row.
+* Turning off the FPS and CPU labels on the Metrics page moved those values to the left edge of
+  their column (pancake) or line (box). "Show labels" off removed every label.
+* In "Grouped by device" the device names stayed while per-statistic labels were off, the
+  Label boxes were greyed out, and the note explaining why was shown.
+* The first build's preview grew as wide as a long pancake and covered the Overlay page; it
+  now scrolls sideways at actual size.
+* The row count first used egui's number widget. With simulated clicks it sometimes ignored a
+  click after Enter, so it was replaced by a plain text box. A test drives that box frame by
+  frame (`number_box_takes_typed_numbers_and_clamps_on_commit`): 3, 5 and 2 in a row, 25 → 20,
+  0 → 1, empty or "x" → kept, Tab and a click elsewhere commit.
+* Simulated clicks were not reliable for text boxes in this window at all, including the
+  0.2.0 Label boxes, so typing was checked by hand: 3, 5 and 2, each followed by Enter, were
+  each saved by the app (recorded from the configuration file as they happened) and the
+  overlay ended 2 rows high. In an earlier hand test in a session that simulated input had
+  already confused, the last number (2) showed in the window but was not saved; that was not
+  seen again and its cause is not known.
 
 ## FPS and frame time (Windows)
 
@@ -434,6 +460,7 @@ been measured over a real game.
 These have **not** been verified. Treat them as unknown:
 
 * **More real games**: only one DXGI game (Geometry Dash) has been compared with PresentMon; D3D9, OpenGL and Vulkan games are untested.
+* **Line / Pancake Mode on Linux**: built and unit-tested in CI only; not seen on a Linux desktop.
 * **CPU clock on Linux**: no CI machine can confirm it (see CPU clock on CI machines). It reads the same file as a plain reader and agrees with one as closely as two plain readers agree, and it needs a check on a real Linux PC.
 * **Lows against PresentMon or in a real game**: lows have only been compared with the test presenter's own measurement.
 * **The administrator prompt during an update**: CI machines show none, and the test on the developer PC used an install for one user. Saying No to the prompt was simulated with an installer that fails.
